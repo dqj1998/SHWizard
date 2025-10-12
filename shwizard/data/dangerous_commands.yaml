@@ -1,0 +1,85 @@
+high_risk:
+  - pattern: "^rm\\s+-rf\\s+/"
+    description: "删除根目录 / Delete root directory"
+    confirmation_required: true
+    block: true
+    
+  - pattern: "^rm\\s+-rf\\s+/\\s*$"
+    description: "删除根目录 / Delete root directory"
+    confirmation_required: true
+    block: true
+    
+  - pattern: "^dd\\s+.*of=/dev/(sd|hd|nvme)"
+    description: "直接写入磁盘设备 / Direct write to disk device"
+    confirmation_required: true
+    block: false
+    
+  - pattern: "^mkfs\\."
+    description: "格式化文件系统 / Format filesystem"
+    confirmation_required: true
+    block: false
+    
+  - pattern: "^:(\\)|\\{).*\\|.*&.*\\}"
+    description: "Fork炸弹 / Fork bomb"
+    confirmation_required: true
+    block: true
+    
+  - pattern: "^sudo\\s+rm\\s+-rf\\s+/"
+    description: "使用sudo删除根目录 / Delete root with sudo"
+    confirmation_required: true
+    block: true
+    
+  - pattern: ">/dev/(sd|hd|nvme)"
+    description: "重定向到磁盘设备 / Redirect to disk device"
+    confirmation_required: true
+    block: false
+
+medium_risk:
+  - pattern: "^rm\\s+-rf"
+    description: "递归强制删除 / Recursive force delete"
+    warning: true
+    
+  - pattern: "^chmod\\s+777"
+    description: "开放所有权限 / Open all permissions"
+    warning: true
+    
+  - pattern: "^chmod\\s+-R\\s+777"
+    description: "递归开放所有权限 / Recursive open all permissions"
+    warning: true
+    
+  - pattern: "^sudo\\s+rm"
+    description: "使用sudo删除 / Delete with sudo"
+    warning: true
+    
+  - pattern: "^wget.*\\|.*sh"
+    description: "下载并执行脚本 / Download and execute script"
+    warning: true
+    
+  - pattern: "^curl.*\\|.*sh"
+    description: "下载并执行脚本 / Download and execute script"
+    warning: true
+    
+  - pattern: "^chown\\s+-R"
+    description: "递归更改所有者 / Recursive change owner"
+    warning: true
+    
+  - pattern: "^\\s*>\\s*/etc/"
+    description: "覆盖系统配置文件 / Overwrite system config"
+    warning: true
+    
+  - pattern: "^mv\\s+.*\\s+/dev/null"
+    description: "移动文件到/dev/null / Move file to /dev/null"
+    warning: true
+
+low_risk:
+  - pattern: "^rm\\s+"
+    description: "删除文件 / Delete files"
+    info: true
+    
+  - pattern: "^sudo"
+    description: "使用管理员权限 / Use sudo"
+    info: true
+
+custom_rules:
+  enabled: true
+  user_patterns: []

@@ -1,0 +1,54 @@
+ollama:
+  embedded: true
+  auto_download: true
+  base_url: "http://localhost:11434"
+  model: "gemma2:2b"
+  timeout: 60
+  max_retries: 3
+  
+  download:
+    models:
+      - name: "gemma2:2b"
+        size: "1.6GB"
+        default: true
+    install_path: "~/.shwizard/ollama"
+
+safety:
+  enabled: true
+  confirm_high_risk: true
+  warn_medium_risk: true
+  info_low_risk: false
+  dry_run_mode: false
+  custom_rules_file: "~/.shwizard/custom_rules.yaml"
+  block_high_risk: true
+
+history:
+  enabled: true
+  max_entries: 10000
+  database_path: "~/.shwizard/history.db"
+  priority_search: true
+  search_weight:
+    frequency: 0.4
+    recency: 0.3
+    success_rate: 0.3
+
+ui:
+  color_enabled: true
+  show_explanations: true
+  verbose: false
+  language: "auto"
+  confirm_execution: true
+  show_command_preview: true
+
+context:
+  collect_env: true
+  collect_cwd: true
+  collect_os_info: true
+  collect_installed_tools: false
+
+logging:
+  enabled: true
+  level: "INFO"
+  file: "~/.shwizard/shwizard.log"
+  max_size_mb: 10
+  backup_count: 3
