@@ -2,14 +2,14 @@ ollama:
   embedded: true
   auto_download: true
   base_url: "http://localhost:11434"
-  model: "gemma2:2b"
+  model: "gemma3:270m"
   timeout: 60
   max_retries: 3
   
   download:
     models:
-      - name: "gemma2:2b"
-        size: "1.6GB"
+      - name: "gemma3:270m"
+        size: "270MB"
         default: true
     install_path: "~/.shwizard/ollama"
 

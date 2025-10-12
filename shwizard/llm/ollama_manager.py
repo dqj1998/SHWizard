@@ -82,8 +82,11 @@ class OllamaManager:
             response = requests.get(download_url, stream=True, timeout=300)
             response.raise_for_status()
             
-            os_type = platform.system().lower()
-            if os_type == "windows" or "darwin" in os_type:
+            # Normalize OS type to one of: windows / linux / macos
+            raw_os = platform.system().lower()
+            os_type = "windows" if raw_os == "windows" else ("macos" if raw_os == "darwin" else "linux")
+            # On Windows, download zip; on Linux/macOS, download directly to binary path
+            if os_type == "windows":
                 temp_file = self.install_path / "ollama_download.zip"
             else:
                 temp_file = self.ollama_binary
@@ -100,14 +103,18 @@ class OllamaManager:
                             progress = (downloaded / total_size) * 100
                             logger.debug(f"Download progress: {progress:.1f}%")
             
-            if os_type != "linux":
+            # Handle post-download steps
+            if os_type == "windows":
+                # Extract executable from zip
                 if zipfile.is_zipfile(temp_file):
                     with zipfile.ZipFile(temp_file, 'r') as zip_ref:
                         zip_ref.extractall(self.install_path)
                     temp_file.unlink()
-            
-            if self.ollama_binary.exists():
-                os.chmod(self.ollama_binary, 0o755)
+                # On Windows, chmod is not required
+            else:
+                # Ensure binary is executable on Linux/macOS
+                if self.ollama_binary.exists():
+                    os.chmod(self.ollama_binary, 0o755)
             
             logger.info("Ollama downloaded successfully")
             return True

@@ -125,5 +125,20 @@ class HistoryManager:
     def get_statistics(self) -> Dict[str, Any]:
         return self.db.get_command_statistics()
     
+    def set_preferred_language(self, lang: str):
+        """Persist user's preferred language code (ISO 639-1) in user preferences."""
+        try:
+            self.db.set_preference("preferred_language", lang)
+        except Exception as e:
+            logger.warning(f"Failed to save preferred language: {e}")
+
+    def get_preferred_language(self, default: Optional[str] = "en") -> str:
+        """Load user's preferred language code from user preferences."""
+        try:
+            return self.db.get_preference("preferred_language", default) or default
+        except Exception as e:
+            logger.warning(f"Failed to load preferred language: {e}")
+            return default
+
     def cleanup(self, max_entries: int = 10000):
         self.db.cleanup_old_entries(max_entries)

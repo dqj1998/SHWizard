@@ -1,4 +1,6 @@
 from typing import Dict, List, Optional
+import re
+from shwizard.utils.input_utils import is_command_input
 
 
 SYSTEM_PROMPT_TEMPLATE = """You are an expert shell command assistant. Users will describe what they want to do in natural language, and you need to generate the corresponding shell commands.
@@ -72,23 +74,77 @@ def build_explain_prompt(command: str, os_type: str, shell_type: str) -> str:
 
 
 def parse_command_response(response: str) -> List[str]:
-    if "|||" in response:
-        commands = [cmd.strip() for cmd in response.split("|||")]
-    else:
-        commands = [response.strip()]
-    
-    cleaned_commands = []
-    for cmd in commands:
-        cmd = cmd.strip()
-        if cmd.startswith("```"):
-            lines = cmd.split("\n")
-            cmd = "\n".join(line for line in lines if not line.startswith("```"))
-            cmd = cmd.strip()
-        
-        if cmd.startswith("$ "):
-            cmd = cmd[2:]
-        
-        if cmd:
-            cleaned_commands.append(cmd)
-    
-    return cleaned_commands
+    """
+    Parse LLM response and extract only valid shell commands.
+
+    Rules:
+    - Prefer content inside fenced code blocks if present.
+    - Support "|||" as multi-command separator.
+    - Strip markdown bullets, numbered lists, and "Command/コマンド N:" prefixes.
+    - Ignore "Explanation:" lines and code fence markers.
+    - Trim leading "$ " prompt prefix.
+    - Validate each candidate line using is_command_input and deduplicate.
+    """
+    text = response.strip()
+
+    # Prefer fenced code blocks if present: extract inner content(s)
+    blocks: List[str] = []
+    if "```" in text:
+        parts = text.split("```")
+        # Code blocks are at odd indices: 1,3,5,...
+        for i in range(1, len(parts), 2):
+            block = parts[i].strip()
+            if block:
+                blocks.append(block)
+    if blocks:
+        text = "\n".join(blocks)
+
+    # Split into candidates using "|||", otherwise keep as single candidate
+    candidates: List[str] = [c.strip() for c in (text.split("|||") if "|||" in text else [text])]
+
+    cleaned: List[str] = []
+    for cand in candidates:
+        # Process line-by-line to filter explanation and markdown noise
+        for line in cand.splitlines():
+            l = line.strip()
+            if not l:
+                continue
+
+            # Strip decorative emoji/symbol prefixes (e.g., '✅', '🔍', '👉')
+            l = re.sub(r"^\s*(?:[^\w$`]+)\s*", "", l)
+
+            # Remove common prefixes used by LLM enumerations
+            l = re.sub(r"^\s*(?:[-*•]\s|\d+\.\s)", "", l)
+            l = re.sub(r"^\s*(?:Command|コマンド)\s*\d+\s*:\s*", "", l, flags=re.IGNORECASE)
+
+            # Strip tool/prompt prefixes like 'shwizard> ' or 'user>'
+            l = re.sub(r"^\s*[\w\-\s]+>\s*", "", l)
+
+            # Ignore explanation headings (robust to leading symbols and optional colon/formatting)
+            if (
+                re.match(r"^\s*(?:[^\w$`]+)?\s*explanation\b", l, flags=re.IGNORECASE)
+                or re.match(r"^\s*\*\*explanation:? ?\*\*\s*$", l, flags=re.IGNORECASE)
+            ):
+                continue
+
+            # Strip shell prompt prefix
+            if l.startswith("$ "):
+                l = l[2:]
+
+            # Skip residual code fence markers
+            if l.startswith("```") or l.endswith("```"):
+                continue
+
+            # Accept only lines that look like actual shell commands
+            if is_command_input(l):
+                cleaned.append(l)
+
+    # Deduplicate while preserving order
+    result: List[str] = []
+    seen = set()
+    for cmd in cleaned:
+        if cmd not in seen:
+            seen.add(cmd)
+            result.append(cmd)
+
+    return result

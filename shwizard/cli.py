@@ -5,7 +5,9 @@ from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from rich.markdown import Markdown
-from typing import Optional, List
+from typing import Optional, List, Tuple
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import InMemoryHistory
 
 from shwizard.core.ai_service import AIService
 from shwizard.core.context_manager import ContextManager
@@ -14,6 +16,8 @@ from shwizard.safety.checker import SafetyChecker
 from shwizard.storage.config import ConfigManager
 from shwizard.storage.history import HistoryManager
 from shwizard.utils.logger import setup_logger, get_logger
+from shwizard.utils.input_utils import is_command_input
+from shwizard.utils.i18n import LLMTranslator, tr_llm, translate_rule_description_llm
 
 console = Console()
 logger = None
@@ -72,23 +76,72 @@ def main(ctx, query, interactive, explain, history, dry_run, no_safety, config_p
 
 
 def process_query(query: str, config: ConfigManager, dry_run: bool = False, safety_enabled: bool = True):
-    console.print(f"\n🔍 [cyan]Processing:[/cyan] {query}\n")
-    
+    ai_service = AIService(
+        model=config.get("ollama.model", "gemma3:270m"),
+        base_url=config.get("ollama.base_url", "http://localhost:11434"),
+        timeout=config.get("ollama.timeout", 60)
+    )
+    translator = LLMTranslator(ai_service)
+
+    # Language preference and detection logic:
+    # - Load preferred language (for command-like inputs)
+    # - Detect language for natural language queries and persist it
+    history_manager = HistoryManager()
+    preferred_lang = history_manager.get_preferred_language("en")
+    is_cmd = is_command_input(query)
+    detected_lang = translator.detect(query)
+    lang = detected_lang if not is_cmd else (preferred_lang or detected_lang)
+    if not is_cmd:
+        try:
+            if lang and lang != preferred_lang:
+                history_manager.set_preferred_language(lang)
+        except Exception as e:
+            if logger:
+                logger.warning(f"Failed to persist preferred language: {e}")
+
+    console.print(f"\n🔍 [cyan]{tr_llm('processing', lang, translator)}:[/cyan] {query}\n")
+
     try:
+        # Build context early so both direct-command and AI paths can record history with context
         context_manager = ContextManager(
             collect_tools=config.get("context.collect_installed_tools", False)
         )
         context = context_manager.get_context()
         
-        history_manager = HistoryManager()
         safety_checker = SafetyChecker(enabled=safety_enabled)
         executor = CommandExecutor(dry_run=dry_run)
+
+        # If the input looks like a direct shell command, bypass AI generation
+        if is_command_input(query):
+            # Perform safety check
+            check_result = safety_checker.check_command(query)
+            display_command_with_safety(query, check_result, 1, lang, translator)
+            
+            # Blocked commands should never execute
+            if check_result.is_blocked():
+                console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+                return
+            
+            # For high-risk commands, require explicit confirmation
+            if check_result.risk_level == "high_risk":
+                if not confirm_dangerous_command(query, check_result, lang, translator):
+                    console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
+                    return
+            
+            # Record and execute directly (no generic execution confirmation for direct non-high-risk commands)
+            command_id = history_manager.add_command(query, query, context)
+            success, output = executor.execute(query)
+            
+            if output:
+                console.print(f"\n[bold]{tr_llm('output_label', lang, translator)}:[/bold]")
+                console.print(Panel(output, expand=False))
+            
+            history_manager.mark_executed(command_id, success, output[:500] if output else None)
+            
+            # Skip post-execution feedback prompts for direct commands
+            return
         
-        ai_service = AIService(
-            model=config.get("ollama.model", "gemma2:2b"),
-            base_url=config.get("ollama.base_url", "http://localhost:11434"),
-            timeout=config.get("ollama.timeout", 60)
-        )
+        # Natural language path: use AI to generate commands
         
         with console.status("[bold green]Initializing AI service..."):
             if not ai_service.initialize():
@@ -101,7 +154,9 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
             relevant_commands = history_manager.search_relevant_commands(query, limit=5, context=context)
         
         with console.status("[bold green]Generating commands..."):
-            commands = ai_service.generate_commands(query, context, relevant_commands)
+            commands_raw = ai_service.generate_commands(query, context, relevant_commands)
+        
+        commands = normalize_commands(commands_raw)
         
         if not commands:
             console.print("[red]❌ Failed to generate commands[/red]")
@@ -109,7 +164,7 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
         
         console.print(f"[green]✅ Generated {len(commands)} command(s):[/green]\n")
         
-        selected_command = select_command(commands, safety_checker, config)
+        selected_command, selected_by_number = select_command(commands, safety_checker, config, lang, translator)
         
         if not selected_command:
             console.print("[yellow]Operation cancelled[/yellow]")
@@ -117,15 +172,16 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
         
         command_id = history_manager.add_command(query, selected_command, context)
         
-        if config.get("ui.confirm_execution", True) and not dry_run:
-            if not Confirm.ask(f"\n🚀 Execute this command?", default=True):
-                console.print("[yellow]Execution cancelled[/yellow]")
+        # Keep generic execution confirmation only for AI-generated commands
+        if config.get("ui.confirm_execution", True) and not dry_run and not selected_by_number:
+            if not Confirm.ask(f"\n🚀 {tr_llm('execute_this_command', lang, translator)}", default=True):
+                console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
                 return
         
         success, output = executor.execute(selected_command)
         
         if output:
-            console.print("\n[bold]Output:[/bold]")
+            console.print(f"\n[bold]{tr_llm('output_label', lang, translator)}:[/bold]")
             console.print(Panel(output, expand=False))
         
         history_manager.mark_executed(command_id, success, output[:500] if output else None)
@@ -143,48 +199,51 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
         console.print(f"[red]❌ Error: {e}[/red]")
 
 
-def select_command(commands: List[str], safety_checker: SafetyChecker, config: ConfigManager) -> Optional[str]:
+def normalize_commands(commands: List[str]) -> List[str]:
+    normalized: List[str] = []
+    seen = set()
+    for s in commands:
+        if not s:
+            continue
+        for line in s.splitlines():
+            cmd = line.strip()
+            if not cmd:
+                continue
+            if is_command_input(cmd):
+                if cmd not in seen:
+                    normalized.append(cmd)
+                    seen.add(cmd)
+    return normalized
+
+def select_command(commands: List[str], safety_checker: SafetyChecker, config: ConfigManager, lang: str, translator: LLMTranslator) -> Tuple[Optional[str], bool]:
     if len(commands) == 1:
         command = commands[0]
         check_result = safety_checker.check_command(command)
-        display_command_with_safety(command, check_result, 1)
+        display_command_with_safety(command, check_result, 1, lang, translator)
         
         if check_result.is_blocked():
-            console.print("[red bold]⛔ This command is blocked for safety reasons[/red bold]")
-            return None
+            console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+            return None, False
         
         if check_result.needs_confirmation():
-            if not confirm_dangerous_command(command, check_result):
+            if not confirm_dangerous_command(command, check_result, lang, translator):
                 return None
         
-        return command
+        return command, False
     
-    table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("No.", style="dim", width=4)
-    table.add_column("Command", style="white")
-    table.add_column("Safety", justify="center", width=10)
-    
+    # Display commands with numbers and safety indicators
     for idx, cmd in enumerate(commands, 1):
         check_result = safety_checker.check_command(cmd)
-        emoji = safety_checker.get_risk_level_emoji(check_result.risk_level)
-        color = safety_checker.get_risk_level_color(check_result.risk_level)
-        
-        table.add_row(
-            str(idx),
-            cmd,
-            f"[{color}]{emoji}[/{color}]"
-        )
-    
-    console.print(table)
+        display_command_with_safety(cmd, check_result, idx, lang, translator)
     
     while True:
         choice = Prompt.ask(
-            "\nSelect command [1-{max}] or 'q' to quit".format(max=len(commands)),
+            "\n" + tr_llm("select_command_prompt", lang, translator, max=len(commands)),
             default="1"
         )
         
         if choice.lower() == 'q':
-            return None
+            return None, False
         
         try:
             idx = int(choice) - 1
@@ -193,23 +252,23 @@ def select_command(commands: List[str], safety_checker: SafetyChecker, config: C
                 check_result = safety_checker.check_command(selected)
                 
                 if check_result.is_blocked():
-                    console.print("[red bold]⛔ This command is blocked for safety reasons[/red bold]")
+                    console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
                     continue
                 
                 if check_result.needs_confirmation():
-                    if not confirm_dangerous_command(selected, check_result):
+                    if not confirm_dangerous_command(selected, check_result, lang, translator):
                         continue
                 
-                return selected
+                return selected, True
             else:
-                console.print(f"[red]Please enter a number between 1 and {len(commands)}[/red]")
+                console.print(f"[red]{tr_llm('enter_number_between', lang, translator, max=len(commands))}[/red]")
         except ValueError:
-            console.print("[red]Invalid input[/red]")
+            console.print(f"[red]{tr_llm('invalid_input', lang, translator)}[/red]")
 
 
-def display_command_with_safety(command: str, check_result, index: int = 1):
+def display_command_with_safety(command: str, check_result, index: int = 1, lang: str = "en", translator: LLMTranslator = None):
     emoji = "✅" if check_result.is_safe else "⚠️"
-    console.print(f"\n{emoji} [bold]Command {index}:[/bold] [white]{command}[/white]")
+    console.print(f"\n{emoji} [bold]{tr_llm('command_label', lang, translator)} {index}:[/bold] [white]{command}[/white]")
     
     if not check_result.is_safe or check_result.needs_warning():
         risk_emoji = {"high_risk": "🚨", "medium_risk": "⚠️", "low_risk": "ℹ️"}.get(
@@ -218,16 +277,17 @@ def display_command_with_safety(command: str, check_result, index: int = 1):
         risk_color = {"high_risk": "red", "medium_risk": "yellow", "low_risk": "blue"}.get(
             check_result.risk_level, "white"
         )
-        console.print(f"{risk_emoji} [{risk_color}]Warning: {check_result.message}[/{risk_color}]")
+        desc = translate_rule_description_llm(check_result.message, lang, translator)
+        console.print(f"{risk_emoji} [{risk_color}]{tr_llm('warning_label', lang, translator)}: {desc}[/{risk_color}]")
 
 
-def confirm_dangerous_command(command: str, check_result) -> bool:
-    console.print(f"\n[red bold]🚨 DANGEROUS COMMAND DETECTED[/red bold]")
-    console.print(f"[yellow]Command:[/yellow] {command}")
-    console.print(f"[yellow]Risk:[/yellow] {check_result.message}")
+def confirm_dangerous_command(command: str, check_result, lang: str, translator: LLMTranslator) -> bool:
+    console.print(f"\n[red bold]🚨 {tr_llm('danger_detected_title', lang, translator)}[/red bold]")
+    console.print(f"[yellow]{tr_llm('command_label', lang, translator)}:[/yellow] {command}")
+    console.print(f"[yellow]{tr_llm('risk_label', lang, translator)}:[/yellow] {translate_rule_description_llm(check_result.message, lang, translator)}")
     
     confirmation = Prompt.ask(
-        f"\nType 'yes' to proceed or anything else to cancel",
+        "\n" + tr_llm("type_yes_to_proceed", lang, translator),
         default="no"
     )
     
@@ -242,7 +302,7 @@ def explain_command(command: str, config: ConfigManager):
         context = context_manager.get_context()
         
         ai_service = AIService(
-            model=config.get("ollama.model", "gemma2:2b"),
+            model=config.get("ollama.model", "gemma3:270m"),
             base_url=config.get("ollama.base_url", "http://localhost:11434")
         )
         
@@ -295,6 +355,20 @@ def show_history(config: ConfigManager):
                   f"👎 {stats['negative_feedback']}[/dim]")
 
 
+def create_prompt_session(history_manager: HistoryManager) -> PromptSession:
+    """Create a prompt-toolkit session with history preloaded from DB."""
+    hist = InMemoryHistory()
+    try:
+        past = history_manager.get_recent_history(limit=200)
+        for entry in reversed(past):
+            q = entry.get("user_query")
+            if q:
+                hist.append_string(q)
+    except Exception as e:
+        if logger:
+            logger.warning(f"Failed to preload history: {e}")
+    return PromptSession("shwizard> ", history=hist)
+
 def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enabled: bool = True):
     console.print(Panel.fit(
         "[bold cyan]SHWizard Interactive Mode[/bold cyan]\n"
@@ -311,7 +385,7 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
     executor = CommandExecutor(dry_run=dry_run)
     
     ai_service = AIService(
-        model=config.get("ollama.model", "gemma2:2b"),
+        model=config.get("ollama.model", "gemma3:270m"),
         base_url=config.get("ollama.base_url", "http://localhost:11434")
     )
     
@@ -321,10 +395,11 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
             return
     
     console.print("[green]✅ Ready![/green]\n")
+    session = create_prompt_session(history_manager)
     
     while True:
         try:
-            query = Prompt.ask("[bold cyan]shwizard>[/bold cyan]").strip()
+            query = session.prompt().strip()
             
             if not query:
                 continue

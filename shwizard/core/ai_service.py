@@ -12,7 +12,7 @@ class AIService:
     def __init__(
         self,
         ollama_manager: Optional[OllamaManager] = None,
-        model: str = "gemma2:2b",
+        model: str = "gemma3:270m",
         base_url: str = "http://localhost:11434",
         timeout: int = 60,
         max_retries: int = 3
