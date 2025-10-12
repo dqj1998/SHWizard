@@ -1,0 +1,85 @@
+high_risk:
+  - pattern: "^rm\\s+-rf\\s+/"
+    description: "Delete root directory"
+    confirmation_required: true
+    block: true
+
+  - pattern: "^rm\\s+-rf\\s+/\\s*$"
+    description: "Delete root directory"
+    confirmation_required: true
+    block: true
+
+  - pattern: "^dd\\s+.*of=/dev/(sd|hd|nvme)"
+    description: "Direct write to disk device"
+    confirmation_required: true
+    block: false
+
+  - pattern: "^mkfs\\."
+    description: "Format filesystem"
+    confirmation_required: true
+    block: false
+
+  - pattern: "^:(\\)|\\{).*\\|.*&.*\\}"
+    description: "Fork bomb"
+    confirmation_required: true
+    block: true
+
+  - pattern: "^sudo\\s+rm\\s+-rf\\s+/"
+    description: "Delete root with sudo"
+    confirmation_required: true
+    block: true
+
+  - pattern: ">/dev/(sd|hd|nvme)"
+    description: "Redirect to disk device"
+    confirmation_required: true
+    block: false
+
+medium_risk:
+  - pattern: "^rm\\s+-rf"
+    description: "Recursive force delete"
+    warning: true
+
+  - pattern: "^chmod\\s+777"
+    description: "Open all permissions"
+    warning: true
+
+  - pattern: "^chmod\\s+-R\\s+777"
+    description: "Recursive open all permissions"
+    warning: true
+
+  - pattern: "^sudo\\s+rm"
+    description: "Delete with sudo"
+    warning: true
+
+  - pattern: "^wget.*\\|.*sh"
+    description: "Download and execute script"
+    warning: true
+
+  - pattern: "^curl.*\\|.*sh"
+    description: "Download and execute script"
+    warning: true
+
+  - pattern: "^chown\\s+-R"
+    description: "Recursive change owner"
+    warning: true
+
+  - pattern: "^\\s*>\\s*/etc/"
+    description: "Overwrite system config"
+    warning: true
+
+  - pattern: "^mv\\s+.*\\s+/dev/null"
+    description: "Move file to /dev/null"
+    warning: true
+
+low_risk:
+  - pattern: "^rm\\s+"
+    description: "Delete files"
+    info: true
+
+  - pattern: "^sudo"
+    description: "Use sudo"
+    info: true
+
+custom_rules:
+  enabled: true
+  user_patterns: []

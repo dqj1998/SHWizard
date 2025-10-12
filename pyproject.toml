@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shwizard"
+version = "0.1.0"
+description = "A shell with AI wizard - Natural language to shell commands"
+authors = [{name = "Qj D", email = "dqj1998@gmail.com"}]
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+keywords = ["shell", "ai", "cli", "assistant", "ollama"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "click>=8.0.0",
+    "rich>=13.0.0",
+    "prompt-toolkit>=3.0.0",
+    "requests>=2.28.0",
+    "pyyaml>=6.0",
+    "platformdirs>=3.0.0",
+    "urllib3>=1.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+]
+build = [
+    "pyinstaller>=5.0.0",
+]
+
+[project.scripts]
+shwizard = "shwizard.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dqj1998/SHWizard"
+Repository = "https://github.com/dqj1998/SHWizard"
+Issues = "https://github.com/dqj1998/SHWizard/issues"
+
+[tool.setuptools]
+packages = ["shwizard", "shwizard.core", "shwizard.safety", "shwizard.storage", "shwizard.utils", "shwizard.llm"]
+
+[tool.setuptools.package-data]
+shwizard = ["data/*.yaml", "data/*.json"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
