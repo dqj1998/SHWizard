@@ -1,7 +1,7 @@
 ollama:
   embedded: true
   auto_download: true
-  base_url: "http://localhost:11434"
+  base_url: "http://localhost:11435"
   model: "gemma3:270m"
   timeout: 60
   max_retries: 3
@@ -39,6 +39,17 @@ ui:
   language: "auto"
   confirm_execution: true
   show_command_preview: true
+  mouse_support: false
+  mouse_auto_mode: true
+  editing_mode: "emacs"  # options: emacs, vi
+  completion:
+    enabled: true
+    case_insensitive: true
+    llm_enabled: true
+    style: "readline_like"  # options: readline_like, multi_column, toolbar
+    complete_while_typing: false
+    complete_in_thread: true
+    max_candidates: 50
 
 context:
   collect_env: true

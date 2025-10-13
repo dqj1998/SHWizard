@@ -60,7 +60,7 @@ class ConfigManager:
             "ollama": {
                 "embedded": True,
                 "auto_download": True,
-                "base_url": "http://localhost:11434",
+                "base_url": "http://localhost:11435",
                 "model": "gemma2:2b",
                 "timeout": 60,
             },

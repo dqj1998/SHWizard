@@ -1,5 +1,6 @@
 import requests
 import time
+import atexit
 from typing import List, Optional, Dict, Any
 from shwizard.llm.ollama_manager import OllamaManager
 from shwizard.utils.prompt_utils import build_command_prompt, build_explain_prompt, parse_command_response
@@ -13,7 +14,7 @@ class AIService:
         self,
         ollama_manager: Optional[OllamaManager] = None,
         model: str = "gemma3:270m",
-        base_url: str = "http://localhost:11434",
+        base_url: str = "http://localhost:11435",
         timeout: int = 60,
         max_retries: int = 3
     ):
@@ -23,6 +24,7 @@ class AIService:
         self.timeout = timeout
         self.max_retries = max_retries
         self._initialized = False
+        atexit.register(self.shutdown)
     
     def initialize(self) -> bool:
         if self._initialized:
@@ -134,3 +136,13 @@ class AIService:
     def shutdown(self):
         if self.ollama_manager and self.ollama_manager.embedded:
             self.ollama_manager.stop_ollama_server()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self.shutdown()
+        except Exception:
+            pass
+        return False
