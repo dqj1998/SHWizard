@@ -7,7 +7,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-[English](./docs/README_EN.md) | Simplified Chinese
 
 </div>
 
@@ -147,7 +146,7 @@ ollama:
   embedded: true              # Use embedded Ollama
   auto_download: true         # Automatically download models
   model: "gemma2:2b"          # Default model
-  base_url: "http://localhost:11434"
+  base_url: "http://localhost:11435"
 
 safety:
   enabled: true               # Enable safety checks

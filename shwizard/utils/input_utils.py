@@ -19,7 +19,7 @@ SUBCOMMAND_COMMANDS = {
 }
 
 # Simple commands that are valid even without flags/paths/subcommands
-SIMPLE_COMMANDS = {"ls", "pwd", "whoami", "date"}
+SIMPLE_COMMANDS = {"ls", "pwd", "whoami", "date", "cd"}
 
 
 def _contains_shell_operators(text: str) -> bool:

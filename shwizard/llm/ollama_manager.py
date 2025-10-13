@@ -22,7 +22,7 @@ class OllamaManager:
     
     def __init__(
         self,
-        base_url: str = "http://localhost:11434",
+        base_url: str = "http://localhost:11435",
         embedded: bool = True,
         auto_download: bool = True,
         install_path: Optional[Path] = None
