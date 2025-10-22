@@ -1,3 +1,42 @@
+# LLM Configuration - New LLM_cpp backend (default)
+llm:
+  backend: "llmcpp"  # Options: "llmcpp", "ollama"
+  model: "gemma-3-270m-Q8_0.gguf"
+  # model_path is automatically determined based on platform:
+  # macOS: ~/Library/Application Support/shwizard/models/
+  # Linux: ~/.local/share/shwizard/models/
+  # Windows: %LOCALAPPDATA%/shwizard/models/
+  timeout: 60
+  max_retries: 3
+  auto_download: true
+  
+  # LLM_cpp specific settings
+  n_ctx: 2048
+  n_gpu_layers: -1  # Auto-detect (-1), or specify number of layers
+  n_threads: 0      # Auto-detect (0), or specify number of threads
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 40
+  repeat_penalty: 1.1
+  
+  # Model management
+  download_source: "huggingface"
+  fallback_models: 
+    - "gemma-3-270m-Q8_0.gguf"
+    - "gemma-2-2b-it-q4_k_m.gguf"
+    - "qwen2-1.5b-instruct-q4_k_m.gguf"
+  
+  # Memory and performance settings
+  use_mmap: true
+  use_mlock: false  # Auto-detected based on platform
+  
+  # Cache management
+  cache:
+    max_size_mb: 10240  # 10GB default cache limit
+    max_age_days: 30    # Remove models older than 30 days
+    cleanup_on_startup: false
+
+# Legacy Ollama configuration (for backward compatibility)
 ollama:
   embedded: true
   auto_download: true

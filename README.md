@@ -16,7 +16,7 @@ SHWizard is a cross-platform AI-assisted Shell tool that lets you describe what 
 
 ### ✨ Core Features
 
-- 🤖 Local AI powered — uses embedded Ollama, ships with the gemma2:2b model by default
+- 🤖 Local AI powered — uses embedded LLM_cpp with GGUF models, ships with Gemma 2B by default
 - 🛡️ Intelligent safety protection — multi-level dangerous command detection and interception
 - 📚 History-aware prioritization — suggestions optimized using past command history
 - 🎯 Context awareness — automatically recognizes OS, current directory, and environment details
@@ -35,7 +35,7 @@ curl -L https://github.com/dqj1998/SHWizard/releases/latest/download/shwizard -o
 chmod +x shwizard
 sudo mv shwizard /usr/local/bin/
 
-# On first run, Ollama and the AI model will be downloaded automatically
+# On first run, the AI model will be downloaded automatically
 shwizard "List all Python files"
 ```
 
@@ -82,6 +82,9 @@ In interactive mode:
 shwizard> List all running Docker containers
 shwizard> Find code files containing TODO
 shwizard> /history  # View history
+shwizard> /models   # List available models
+shwizard> /switch gemma-2-2b-it-q4_k_m.gguf  # Switch model
+shwizard> /info     # Show model information
 shwizard> /stats    # View statistics
 shwizard> /quit     # Exit
 ```
@@ -142,11 +145,17 @@ Display:
 Configuration file location: `~/.config/shwizard/config.yaml`
 
 ```yaml
-ollama:
-  embedded: true              # Use embedded Ollama
+llm:
+  backend: "llmcpp"           # Use LLM_cpp backend
+  model: "gemma-2-2b-it-q4_k_m.gguf"  # Default GGUF model
+  # Model storage directory (platform-specific):
+  # macOS: ~/Library/Application Support/shwizard/models/
+  # Linux: ~/.local/share/shwizard/models/
+  # Windows: %LOCALAPPDATA%/shwizard/models/
   auto_download: true         # Automatically download models
-  model: "gemma2:2b"          # Default model
-  base_url: "http://localhost:11435"
+  n_ctx: 2048                 # Context window size
+  n_gpu_layers: -1            # GPU layers (-1 for auto-detect)
+  temperature: 0.7            # Generation temperature
 
 safety:
   enabled: true               # Enable safety checks
@@ -167,14 +176,18 @@ ui:
 ### Modify configuration
 
 ```bash
-# View configuration
-shwizard config ollama.model
+# View current model information
+shwizard -i
+shwizard> /info
 
-# Modify configuration
-shwizard config ollama.model llama2
+# List available models
+shwizard> /models
 
-# Switch to other models
-shwizard config ollama.model codellama
+# Switch to a different model
+shwizard> /switch llama-3.2-3b-instruct-q4_k_m.gguf
+
+# Or modify configuration file directly
+# Edit ~/.shwizard/config.yaml
 ```
 
 ## 📊 How It Works
@@ -193,7 +206,7 @@ shwizard config ollama.model codellama
 └──────────────────┬──────────────────────┘
                    │
 ┌──────────────────▼──────────────────────┐
-│   Local AI generates Shell commands     │
+│   Local LLM_cpp generates Shell commands │
 └──────────────────┬──────────────────────┘
                    │
 ┌──────────────────▼──────────────────────┐
@@ -251,7 +264,9 @@ SHWizard/
 │   │   ├── config.py
 │   │   └── history.py
 │   ├── llm/               # LLM management
-│   │   └── ollama_manager.py
+│   │   ├── llmcpp_manager.py
+│   │   ├── model_downloader.py
+│   │   └── model_registry.py
 │   ├── utils/             # Utility functions
 │   └── data/              # Configurations and rules
 ├── tests/                 # Tests
@@ -261,11 +276,14 @@ SHWizard/
 ## 📝 FAQ
 
 ### 1. Is the first startup slow?
-On first launch, Ollama and the AI model (~1.6GB) will be downloaded automatically. Please be patient.
+On first launch, the AI model (~1.5GB) will be downloaded automatically. Please be patient.
 
 ### 2. How do I switch the AI model?
 ```bash
-shwizard config ollama.model llama2
+# In interactive mode
+shwizard -i
+shwizard> /models          # List available models
+shwizard> /switch <model>  # Switch to a specific model
 ```
 
 ### 3. Where is the history stored?
@@ -287,7 +305,7 @@ Issues and Pull Requests are welcome!
 
 ## 🙏 Acknowledgements
 
-- [Ollama](https://ollama.ai/) — local LLM runtime
+- [llama.cpp](https://github.com/ggerganov/llama.cpp) — efficient LLM inference
 - [Rich](https://github.com/Textualize/rich) — terminal styling
 - [Click](https://click.palletsprojects.com/) — CLI framework
 

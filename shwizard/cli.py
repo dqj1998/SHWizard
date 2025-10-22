@@ -27,6 +27,8 @@ from shwizard.core.executor import CommandExecutor
 from shwizard.safety.checker import SafetyChecker
 from shwizard.storage.config import ConfigManager
 from shwizard.storage.history import HistoryManager
+from shwizard.utils.config_migrator import ConfigMigrator
+from shwizard.utils.config_validator import ConfigValidator
 from shwizard.utils.logger import setup_logger, get_logger
 from shwizard.utils.input_utils import is_command_input
 from shwizard.utils.i18n import LLMTranslator, tr_llm, translate_rule_description_llm
@@ -66,6 +68,67 @@ def init_logger(config: ConfigManager):
         backup_count=config.get("logging.backup_count", 3)
     )
     return logger
+
+def init_ai_service(config: ConfigManager) -> AIService:
+    """Initialize AI service with automatic configuration migration."""
+    try:
+        # Check if configuration needs migration
+        config_dict = config.config
+        
+        # Migrate configuration if needed
+        if "llm" not in config_dict or config_dict.get("llm", {}).get("backend") != "llmcpp":
+            logger.info("Migrating configuration to LLM_cpp backend...")
+            
+            migrator = ConfigMigrator()
+            migrated_config = migrator.migrate_config_dict(config_dict)
+            
+            # Update the config manager with migrated settings
+            for key, value in migrated_config.get("llm", {}).items():
+                config.set(f"llm.{key}", value)
+            
+            logger.info("Configuration migration completed")
+        
+        # Validate configuration
+        validated_config = ConfigValidator.validate_full_config(config.config)
+        llm_config = validated_config.get("llm", {})
+        
+        # Create AI service with LLM_cpp backend
+        ai_service = AIService(
+            backend=llm_config.get("backend", "llmcpp"),
+            model=llm_config.get("model", "gemma-3-270m-Q8_0.gguf"),
+            timeout=llm_config.get("timeout", 60),
+            max_retries=llm_config.get("max_retries", 3),
+            auto_download=llm_config.get("auto_download", True),
+            # LLM_cpp specific parameters
+            n_ctx=llm_config.get("n_ctx", 2048),
+            n_gpu_layers=llm_config.get("n_gpu_layers", -1),
+            n_threads=llm_config.get("n_threads", 0),
+            temperature=llm_config.get("temperature", 0.7),
+            top_p=llm_config.get("top_p", 0.9),
+            top_k=llm_config.get("top_k", 40),
+            repeat_penalty=llm_config.get("repeat_penalty", 1.1),
+            use_mmap=llm_config.get("use_mmap", True),
+            use_mlock=llm_config.get("use_mlock", False)
+        )
+        
+        return ai_service
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize AI service: {e}")
+        
+        # Fallback to legacy Ollama configuration
+        logger.info("Falling back to legacy Ollama configuration...")
+        try:
+            return AIService(
+                backend="ollama",
+                model=config.get("ollama.model", "gemma3:270m"),
+                base_url=config.get("ollama.base_url", "http://localhost:11435"),
+                timeout=config.get("ollama.timeout", 60),
+                max_retries=config.get("ollama.max_retries", 3)
+            )
+        except Exception as fallback_error:
+            logger.error(f"Fallback initialization also failed: {fallback_error}")
+            raise RuntimeError("Failed to initialize AI service with any backend")
 
 def handle_cd(command_str: str, tokens: List[str], history_manager, context, lang: str, translator: LLMTranslator):
     """
@@ -148,11 +211,12 @@ def main(ctx, query, interactive, explain, history, dry_run, no_safety, config_p
 
 
 def process_query(query: str, config: ConfigManager, dry_run: bool = False, safety_enabled: bool = True):
-    ai_service = AIService(
-        model=config.get("ollama.model", "gemma3:270m"),
-        base_url=config.get("ollama.base_url", "http://localhost:11435"),
-        timeout=config.get("ollama.timeout", 60)
-    )
+    try:
+        ai_service = init_ai_service(config)
+    except Exception as e:
+        console.print(f"[red]❌ Failed to initialize AI service: {e}[/red]")
+        console.print("[yellow]Please check your configuration and try again[/yellow]")
+        return
     translator = LLMTranslator(ai_service)
 
     # Language preference and detection logic:
@@ -231,7 +295,16 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
             with console.status("[bold green]Initializing AI service..."):
                 if not ai_service.initialize():
                     console.print("[red]❌ Failed to initialize AI service[/red]")
-                    console.print("[yellow]Please ensure Ollama is installed and running[/yellow]")
+                    
+                    # Provide backend-specific guidance
+                    if ai_service.backend == "llmcpp":
+                        console.print("[yellow]LLM_cpp backend initialization failed. This may be due to:[/yellow]")
+                        console.print("[yellow]  - Missing model files (will be downloaded automatically)[/yellow]")
+                        console.print("[yellow]  - Insufficient memory or incompatible hardware[/yellow]")
+                        console.print("[yellow]  - Missing llama-cpp-python dependency[/yellow]")
+                        console.print("[yellow]Try: pip install llama-cpp-python[/yellow]")
+                    else:
+                        console.print("[yellow]Please ensure Ollama is installed and running[/yellow]")
                     return
             
             relevant_commands = []
@@ -388,10 +461,9 @@ def explain_command(command: str, config: ConfigManager):
         context_manager = ContextManager()
         context = context_manager.get_context()
         
-        with AIService(
-            model=config.get("ollama.model", "gemma3:270m"),
-            base_url=config.get("ollama.base_url", "http://localhost:11435")
-        ) as ai_service:
+        ai_service = init_ai_service(config)
+        
+        with ai_service:
             
             with console.status("[bold green]Initializing AI service..."):
                 if not ai_service.initialize():
@@ -510,10 +582,13 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
     safety_checker = SafetyChecker(enabled=safety_enabled)
     executor = CommandExecutor(dry_run=dry_run)
     
-    with AIService(
-        model=config.get("ollama.model", "gemma3:270m"),
-        base_url=config.get("ollama.base_url", "http://localhost:11435")
-    ) as ai_service:
+    try:
+        ai_service = init_ai_service(config)
+    except Exception as e:
+        console.print(f"[red]❌ Failed to initialize AI service: {e}[/red]")
+        return
+    
+    with ai_service:
         
         with console.status("[bold green]Initializing AI service..."):
             if not ai_service.initialize():
@@ -582,6 +657,40 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                 
                 if query == "/help":
                     show_help()
+                    if bool(config.get("ui.mouse_auto_mode", True)):
+                        try:
+                            config.set("ui.mouse_support", False)
+                            set_mouse_mode(False)
+                        except Exception as e:
+                            if logger:
+                                logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
+                    continue
+                
+                if query == "/models":
+                    show_available_models(ai_service)
+                    if bool(config.get("ui.mouse_auto_mode", True)):
+                        try:
+                            config.set("ui.mouse_support", False)
+                            set_mouse_mode(False)
+                        except Exception as e:
+                            if logger:
+                                logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
+                    continue
+                
+                if query.startswith("/switch "):
+                    model_name = query[8:].strip()
+                    switch_model(ai_service, model_name)
+                    if bool(config.get("ui.mouse_auto_mode", True)):
+                        try:
+                            config.set("ui.mouse_support", False)
+                            set_mouse_mode(False)
+                        except Exception as e:
+                            if logger:
+                                logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
+                    continue
+                
+                if query == "/info":
+                    show_model_info(ai_service)
                     if bool(config.get("ui.mouse_auto_mode", True)):
                         try:
                             config.set("ui.mouse_support", False)
@@ -678,6 +787,9 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                         if logger:
                             logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
                 
+            except EOFError:
+                console.print("\n[yellow]Goodbye![/yellow]")
+                break
             except KeyboardInterrupt:
                 console.print("\n[yellow]Use /quit to exit[/yellow]")
             except Exception as e:
@@ -693,6 +805,9 @@ def show_help():
   /help      - Show this help message
   /history   - View command history
   /stats     - Show usage statistics
+  /models    - List available LLM models
+  /switch    - Switch model: /switch <model_name>
+  /info      - Show current model information
   /mouse     - Toggle mouse support: /mouse [on|off|toggle]
   /mouse-auto - Auto mouse mode: off after output for easy selection; toggle on with F9 or /mouse. Usage: /mouse-auto [on|off]
   /quit      - Exit interactive mode
@@ -708,6 +823,110 @@ def show_help():
   - compress all images in this folder
 """
     console.print(Panel(help_text, border_style="cyan"))
+
+def show_available_models(ai_service: AIService):
+    """Show available models for the current backend."""
+    try:
+        models = ai_service.list_available_models()
+        
+        if not models:
+            console.print("[yellow]No models available[/yellow]")
+            return
+        
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("Model", style="white", width=30)
+        table.add_column("Size", style="cyan", width=10)
+        table.add_column("Status", style="green", width=10)
+        table.add_column("Description", style="dim", width=40)
+        
+        for model in models:
+            name = model.get("name", "Unknown")
+            size = f"{model.get('size_mb', 0)}MB" if model.get('size_mb') else "Unknown"
+            cached = "✓ Cached" if model.get("cached", False) else "Download"
+            description = model.get("description", "")[:38] + "..." if len(model.get("description", "")) > 40 else model.get("description", "")
+            
+            table.add_row(name, size, cached, description)
+        
+        console.print(table)
+        
+        # Show current model info
+        info = ai_service.get_model_info()
+        if info.get("initialized"):
+            current_model = info.get("model_name", "Unknown")
+            console.print(f"\n[green]Current model: {current_model}[/green]")
+        
+    except Exception as e:
+        console.print(f"[red]❌ Error listing models: {e}[/red]")
+
+def switch_model(ai_service: AIService, model_name: str):
+    """Switch to a different model."""
+    if not model_name:
+        console.print("[red]❌ Please specify a model name[/red]")
+        console.print("[yellow]Usage: /switch <model_name>[/yellow]")
+        return
+    
+    try:
+        with console.status(f"[bold green]Switching to model: {model_name}..."):
+            success = ai_service.switch_model(model_name)
+        
+        if success:
+            console.print(f"[green]✅ Successfully switched to: {model_name}[/green]")
+        else:
+            console.print(f"[red]❌ Failed to switch to: {model_name}[/red]")
+            console.print("[yellow]Use /models to see available models[/yellow]")
+            
+    except Exception as e:
+        console.print(f"[red]❌ Error switching model: {e}[/red]")
+
+def show_model_info(ai_service: AIService):
+    """Show information about the current model."""
+    try:
+        info = ai_service.get_model_info()
+        
+        if not info.get("initialized", False):
+            console.print("[yellow]AI service not initialized[/yellow]")
+            
+            # Show more detailed error information if available
+            if "error" in info:
+                console.print(f"[red]Error: {info['error']}[/red]")
+            
+            # Provide helpful suggestions
+            console.print("\n[cyan]Troubleshooting:[/cyan]")
+            console.print("  1. Check if the model exists: /models")
+            console.print("  2. Try switching to a different model: /switch <model_name>")
+            console.print("  3. Try running a query to force initialization")
+            
+            # Show backend and model info even if not initialized
+            if "backend" in info:
+                console.print(f"\n[dim]Backend: {info['backend']}[/dim]")
+            if "model" in info:
+                console.print(f"[dim]Model: {info['model']}[/dim]")
+            
+            return
+        
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("Property", style="cyan", width=20)
+        table.add_column("Value", style="white", width=40)
+        
+        # Add model information
+        model_info = [
+            ("Backend", info.get("backend", "Unknown")),
+            ("Model", info.get("model_name", "Unknown")),
+            ("File Size", f"{info.get('file_size_mb', 0)}MB"),
+            ("Context Size", str(info.get("context_size", "Unknown"))),
+            ("GPU Layers", str(info.get("gpu_layers", "Unknown"))),
+            ("Threads", str(info.get("threads", "Unknown"))),
+            ("Platform", info.get("platform", "Unknown"))
+        ]
+        
+        for prop, value in model_info:
+            table.add_row(prop, value)
+        
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]❌ Error getting model info: {e}[/red]")
+        logger.error(f"Error in show_model_info: {e}", exc_info=True)
 
 
 @click.command()

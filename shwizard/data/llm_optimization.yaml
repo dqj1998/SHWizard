@@ -1,0 +1,93 @@
+# LLM Optimization Settings for shwizard
+# These settings help improve reliability and reduce errors
+
+# Context management
+context:
+  # Increase context size for better model performance
+  default_context: 4096
+  min_context: 1024
+  max_context: 8192
+  
+  # Context utilization thresholds
+  warning_threshold: 0.8  # Warn when 80% of context is used
+  truncation_threshold: 0.9  # Truncate when 90% of context is used
+
+# Generation parameters
+generation:
+  # Conservative settings for command generation
+  temperature: 0.3
+  top_p: 0.9
+  top_k: 40
+  repeat_penalty: 1.1
+  
+  # Token limits
+  max_tokens: 512
+  min_tokens: 10
+  
+  # Stop sequences to prevent rambling
+  stop_sequences:
+    - "```"
+    - "---"
+    - "\n\n\n"
+    - "Explanation:"
+    - "Note:"
+    - "Output:"
+
+# Error handling
+error_handling:
+  # Retry settings
+  max_retries: 3
+  retry_delay: 1.0
+  exponential_backoff: true
+  
+  # Fallback strategies
+  enable_context_management: true
+  enable_cpu_fallback: true
+  enable_reduced_parameters: true
+  
+  # Error patterns to handle specially
+  eof_errors:
+    - "eof"
+    - "truncated"
+    - "incomplete"
+  
+  context_errors:
+    - "context"
+    - "length"
+    - "too long"
+  
+  memory_errors:
+    - "memory"
+    - "allocation"
+    - "out of memory"
+
+# Platform optimizations
+platform:
+  # macOS Metal optimizations
+  metal:
+    max_gpu_layers: 50
+    reduce_warnings: true
+    conservative_memory: true
+  
+  # CPU fallback settings
+  cpu_fallback:
+    reduced_context: 1024
+    max_tokens: 128
+    temperature: 0.1
+
+# Model compatibility
+models:
+  # Recommended models for different memory configurations
+  low_memory:  # < 4GB
+    - "gemma-3-270m-Q8_0.gguf"
+    - "gemma-2-2b-it-q4_k_m.gguf"
+    - "phi-3-mini-4k-instruct-q4.gguf"
+  
+  medium_memory:  # 4-8GB
+    - "gemma-3-270m-Q8_0.gguf"
+    - "gemma-2-2b-it-q4_k_m.gguf"
+    - "llama-3.2-3b-instruct-q4_k_m.gguf"
+  
+  high_memory:  # > 8GB
+    - "llama-3.2-3b-instruct-q4_k_m.gguf"
+    - "gemma-2-9b-it-q4_k_m.gguf"

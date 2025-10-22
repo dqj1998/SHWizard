@@ -3,25 +3,7 @@ import re
 from shwizard.utils.input_utils import is_command_input
 
 
-SYSTEM_PROMPT_TEMPLATE = """You are an expert shell command assistant. Users will describe what they want to do in natural language, and you need to generate the corresponding shell commands.
-
-Current Environment:
-- Operating System: {os_type}
-- Current Directory: {cwd}
-- Shell Type: {shell_type}
-- Installed Tools: {installed_tools}
-
-Requirements:
-1. Generate only the command, no explanations or markdown
-2. Ensure commands work on the user's system
-3. If there are multiple approaches, provide 2-3 options separated by "|||"
-4. Prioritize safety and readability
-5. Consider the current directory context
-6. Use common tools when possible
-
-User Request: {user_query}
-
-Generate the shell command(s):"""
+SYSTEM_PROMPT_TEMPLATE = """The command to {user_query} is: """
 
 
 EXPLAIN_PROMPT_TEMPLATE = """Explain this shell command in simple terms:
@@ -85,6 +67,9 @@ def parse_command_response(response: str) -> List[str]:
     - Trim leading "$ " prompt prefix.
     - Validate each candidate line using is_command_input and deduplicate.
     """
+    if not response or not response.strip():
+        return []
+    
     text = response.strip()
 
     # Prefer fenced code blocks if present: extract inner content(s)
