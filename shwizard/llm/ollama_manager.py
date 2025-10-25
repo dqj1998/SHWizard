@@ -1,4 +1,5 @@
 import os
+import yaml
 import subprocess
 import time
 import platform
@@ -14,11 +15,6 @@ logger = get_logger(__name__)
 
 
 class OllamaManager:
-    OLLAMA_DOWNLOAD_URLS = {
-        "linux": "https://github.com/ollama/ollama/releases/download/v0.3.12/ollama-linux-amd64",
-        "macos": "https://github.com/ollama/ollama/releases/download/v0.3.12/ollama-darwin",
-        "windows": "https://github.com/ollama/ollama/releases/download/v0.3.12/ollama-windows-amd64.zip"
-    }
     
     def __init__(
         self,
@@ -37,8 +33,16 @@ class OllamaManager:
         self.install_path.mkdir(parents=True, exist_ok=True)
         
         self.ollama_process = None
+        self._load_config()
         self.ollama_binary = self._get_ollama_binary_path()
     
+    def _load_config(self):
+        config_path = Path(__file__).resolve().parent.parent / 'data' / 'default_config.yaml'
+        with open(config_path, 'r') as file:
+            config = yaml.safe_load(file)
+            self.OLLAMA_DOWNLOAD_URLS = config['ollama']['download']['urls']
+        self.default_model_name = config['ollama']['download']['models'][0]['name']
+
     def _get_ollama_binary_path(self) -> Path:
         os_type = platform.system().lower()
         if os_type == "darwin":
@@ -81,6 +85,8 @@ class OllamaManager:
         try:
             response = requests.get(download_url, stream=True, timeout=300)
             response.raise_for_status()
+            logger.debug(f"Content-Length: {response.headers.get('content-length')}")
+            logger.debug(f"Content-Type: {response.headers.get('content-type')}")
             
             # Normalize OS type to one of: windows / linux / macos
             raw_os = platform.system().lower()
@@ -88,8 +94,8 @@ class OllamaManager:
             # On Windows, download zip; on Linux/macOS, download directly to binary path
             if os_type == "windows":
                 temp_file = self.install_path / "ollama_download.zip"
-            else:
-                temp_file = self.ollama_binary
+            elif os_type in ["linux", "macos"]:
+                temp_file = self.install_path / "ollama_download.tgz"
             
             total_size = int(response.headers.get('content-length', 0))
             downloaded = 0
@@ -112,12 +118,22 @@ class OllamaManager:
                     temp_file.unlink()
                 # On Windows, chmod is not required
             else:
+                # Simplified extraction process for tgz
+                logger.debug("Starting extraction of the downloaded tarfile")
+                try:
+                    with tarfile.open(temp_file, 'r:gz') as tar_ref:
+                        tar_ref.extractall(self.install_path)
+                    temp_file.unlink()
+                    logger.info("File extracted successfully")
+                except tarfile.TarError as e:
+                    logger.error(f"Failed to extract tarfile: {e}")
+                    return False
+
                 # Ensure binary is executable on Linux/macOS
                 if self.ollama_binary.exists():
                     os.chmod(self.ollama_binary, 0o755)
-            
-            logger.info("Ollama downloaded successfully")
-            return True
+                logger.info("Ollama downloaded and extracted successfully")
+                return True
             
         except Exception as e:
             logger.error(f"Failed to download Ollama: {e}")
@@ -225,10 +241,12 @@ class OllamaManager:
         return []
     
     def ensure_model_available(self, model_name: str) -> bool:
+        model_name = self.default_model_name
         models = self.list_models()
         model_names = [m.get("name", "") for m in models]
         
         if model_name in model_names or any(model_name in name for name in model_names):
+            logger.info(f"Using default model from config: {model_name}")
             logger.info(f"Model {model_name} is already available")
             return True
         
