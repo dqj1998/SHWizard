@@ -1047,6 +1047,60 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                                 logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
                     continue
 
+                if query.startswith("/export"):
+                    parts = query.split(maxsplit=1)
+                    export_path = parts[1] if len(parts) > 1 else None
+                    try:
+                        exported_file = history_manager.export_database(export_path)
+                        console.print(f"[green]✅ History database exported to: {exported_file}[/green]")
+                    except Exception as e:
+                        console.print(f"[red]❌ Failed to export database: {e}[/red]")
+                        if logger:
+                            logger.error(f"Export failed: {e}", exc_info=True)
+                    if bool(config.get("ui.mouse_auto_mode", True)):
+                        try:
+                            config.set("ui.mouse_support", False)
+                            set_mouse_mode(False)
+                        except Exception as e:
+                            if logger:
+                                logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
+                    continue
+
+                if query.startswith("/import"):
+                    parts = query.split(maxsplit=1)
+                    if len(parts) < 2:
+                        console.print("[yellow]Usage: /import <path_to_database>[/yellow]")
+                        continue
+                    import_path = parts[1]
+                    try:
+                        history_manager.import_database(import_path)
+                        console.print(f"[green]✅ History database imported from: {import_path}[/green]")
+                        
+                        # Reload history into the prompt session for auto-completion
+                        try:
+                            past = history_manager.get_recent_history(limit=200)
+                            for entry in reversed(past):
+                                q = entry.get("user_query")
+                                if q and not any(h == q for h in [session.history.get_strings()[i] for i in range(len(session.history.get_strings()))]):
+                                    session.history.append_string(q)
+                            console.print("[cyan]✓ Imported commands are now available in history and completions[/cyan]")
+                        except Exception as refresh_err:
+                            if logger:
+                                logger.warning(f"Could not refresh prompt history: {refresh_err}")
+                            console.print("[yellow]Note: Some features may require restarting interactive mode[/yellow]")
+                    except Exception as e:
+                        console.print(f"[red]❌ Failed to import database: {e}[/red]")
+                        if logger:
+                            logger.error(f"Import failed: {e}", exc_info=True)
+                    if bool(config.get("ui.mouse_auto_mode", True)):
+                        try:
+                            config.set("ui.mouse_support", False)
+                            set_mouse_mode(False)
+                        except Exception as e:
+                            if logger:
+                                logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
+                    continue
+
                 # Toggle mouse support to allow selecting/copying previous outputs when off
                 if query.startswith("/mouse") or query == "/m":
                     parts = query.split()
@@ -1125,6 +1179,8 @@ def show_help():
   /help      - Show this help message
   /history   - View command history (paginated, 20 per page)
   /stats     - Show usage statistics
+  /export    - Export history database: /export [path]
+  /import    - Import history database: /import <path>
   /mouse     - Toggle mouse support: /mouse [on|off|toggle]
   /quit      - Exit interactive mode
 
@@ -1144,6 +1200,11 @@ def show_help():
   - show disk usage sorted by size
   - count lines of code in this project
   - compress all images in this folder
+
+[bold]Backup & Migration:[/bold]
+  /export                    - Export to default location (~/shwizard_backup.db)
+  /export ~/my_backup.db     - Export to specific file
+  /import ~/my_backup.db     - Import from backup file
 """
     console.print(Panel(help_text, border_style="cyan"))
 

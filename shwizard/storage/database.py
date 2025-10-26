@@ -14,19 +14,20 @@ class Database:
         if isinstance(db_path, str) and db_path == ":memory:":
             self.db_path = db_path
             self.in_memory = True
-            if self.in_memory:
-                self._init_database()
-        elif db_path is None:
-            db_path = get_data_directory() / "history.db"
-            self.db_path: Path = db_path
+            self._init_database()
+        elif db_path is not None:
+            # Custom path provided
+            self.db_path = Path(db_path)
+            self.in_memory = False
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             self._init_database()
-            return
-        self.in_memory = False
-        db_path = get_data_directory() / "history.db"
-        self.db_path: Path = db_path
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_database()
+        else:
+            # Use default path
+            db_path = get_data_directory() / "history.db"
+            self.db_path = db_path
+            self.in_memory = False
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._init_database()
     
     def _init_database(self):
         with sqlite3.connect(self.db_path) as conn:
