@@ -9,6 +9,7 @@ from rich.table import Table
 from rich.markdown import Markdown
 from rich.text import Text
 from typing import Optional, List, Tuple
+import readchar
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 try:
@@ -416,32 +417,82 @@ def explain_command(command: str, config: ConfigManager):
 
 def show_history(config: ConfigManager):
     history_manager = HistoryManager()
-    history = history_manager.get_recent_history(limit=20)
+    page_size = 20
+    offset = 0
     
-    if not history:
-        console.print("[yellow]No command history found[/yellow]")
-        return
-    
-    table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("Time", style="dim", width=16)
-    table.add_column("Query", style="cyan", width=40)
-    table.add_column("Command", style="white", width=40)
-    table.add_column("✓", justify="center", width=3)
-    
-    for entry in history:
-        executed = "✓" if entry.get("executed") else ""
-        time_str = entry.get("timestamp", "")[:16]
-        query = entry.get("user_query", "")[:38] + "..." if len(entry.get("user_query", "")) > 40 else entry.get("user_query", "")
-        command = entry.get("generated_command", "")[:38] + "..." if len(entry.get("generated_command", "")) > 40 else entry.get("generated_command", "")
+    while True:
+        # Fetch history with pagination
+        all_history = history_manager.get_recent_history(limit=10000)  # Get all history first
         
-        table.add_row(time_str, query, command, executed)
-    
-    console.print(table)
-    
-    stats = history_manager.get_statistics()
-    console.print(f"\n[dim]Total: {stats['total_commands']} | "
-                  f"Executed: {stats['executed_commands']} | "
-                  f"👍 {stats['positive_feedback']}")
+        if not all_history:
+            console.print("[yellow]No command history found[/yellow]")
+            return
+        
+        # Calculate pagination
+        total_count = len(all_history)
+        start_idx = offset
+        end_idx = min(offset + page_size, total_count)
+        history_page = all_history[start_idx:end_idx]
+        
+        # Display current page
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("Time", style="dim", width=16)
+        table.add_column("Query", style="cyan", width=40)
+        table.add_column("Command", style="white", width=40)
+        table.add_column("Count", justify="center", width=6)
+        table.add_column("Status", justify="center", width=6)
+        
+        for entry in history_page:
+            # Determine status: ✓ (success), ✗ (failed), or empty (not executed)
+            if entry.get("executed"):
+                feedback = entry.get("user_feedback", 0)
+                executed = "✓" if feedback > 0 else "✗"
+            else:
+                executed = ""
+            time_str = entry.get("timestamp", "")[:16]
+            query = entry.get("user_query", "")[:38] + "..." if len(entry.get("user_query", "")) > 40 else entry.get("user_query", "")
+            command = entry.get("generated_command", "")[:38] + "..." if len(entry.get("generated_command", "")) > 40 else entry.get("generated_command", "")
+            count = str(entry.get("execution_count", 1))
+            
+            table.add_row(time_str, query, command, count, executed)
+        
+        console.print(table)
+        
+        # Show pagination info and statistics
+        stats = history_manager.get_statistics()
+        console.print(f"\n[dim]Showing {start_idx + 1}-{end_idx} of {total_count} | "
+                      f"Executed: {stats['executed_commands']} | "
+                      f"👍 {stats['positive_feedback']}")
+        
+        # Check if there are more entries to show
+        if end_idx < total_count:
+            # Ask user if they want to see more
+            console.print("\n[cyan]More history available[/cyan] [dim](Press Enter for more, q to quit)[/dim]", end=" ")
+            try:
+                key = readchar.readkey()
+                console.print()  # New line after key press
+                
+                if key.lower() == 'q':
+                    break
+                else:  # Any other key (including Enter) continues
+                    offset += page_size
+                    console.print()  # Add spacing between pages
+            except Exception:
+                # Fallback to Prompt.ask if readchar fails
+                choice = Prompt.ask(
+                    "",
+                    choices=["", "q"],
+                    default=""
+                )
+                if choice.lower() == "q":
+                    break
+                else:
+                    offset += page_size
+                    console.print()
+        else:
+            # No more history to show
+            console.print("[dim]End of history[/dim]")
+            break
 
 
 def create_prompt_session(config: ConfigManager, history_manager: HistoryManager, ai_service: AIService) -> PromptSession:
@@ -681,7 +732,7 @@ def show_help():
 
 [bold]Commands:[/bold]
   /help      - Show this help message
-  /history   - View command history
+  /history   - View command history (paginated, 20 per page)
   /stats     - Show usage statistics
   /mouse     - Toggle mouse support: /mouse [on|off|toggle]
   /quit      - Exit interactive mode

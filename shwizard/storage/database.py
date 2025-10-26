@@ -42,7 +42,8 @@ class Database:
                     user_feedback INTEGER DEFAULT 0,
                     platform TEXT,
                     working_directory TEXT,
-                    context_data TEXT
+                    context_data TEXT,
+                    execution_timestamps TEXT
                 )
             """)
             
@@ -86,15 +87,39 @@ class Database:
         context_json = json.dumps(context_data) if context_data else None
         
         with sqlite3.connect(self.db_path) as conn:
+            # Check if identical query+command already exists
             cursor = conn.execute("""
-                INSERT INTO command_history 
-                (user_query, generated_command, executed, execution_result, 
-                 risk_level, platform, working_directory, context_data)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (user_query, generated_command, executed, execution_result,
-                  risk_level, platform, working_directory, context_json))
-            conn.commit()
-            return cursor.lastrowid or 0
+                SELECT id FROM command_history 
+                WHERE user_query = ? AND generated_command = ?
+                ORDER BY timestamp DESC LIMIT 1
+            """, (user_query, generated_command))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Update existing record instead of creating new one
+                command_id = existing[0]
+                
+                conn.execute("""
+                    UPDATE command_history 
+                    SET timestamp = CURRENT_TIMESTAMP,
+                        platform = ?,
+                        working_directory = ?,
+                        context_data = ?
+                    WHERE id = ?
+                """, (platform, working_directory, context_json, command_id))
+                conn.commit()
+                return command_id
+            else:
+                # Create new record (execution_timestamps will be added when executed)
+                cursor = conn.execute("""
+                    INSERT INTO command_history 
+                    (user_query, generated_command, executed, execution_result, 
+                     risk_level, platform, working_directory, context_data, execution_timestamps)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (user_query, generated_command, executed, execution_result,
+                      risk_level, platform, working_directory, context_json, None))
+                conn.commit()
+                return cursor.lastrowid or 0
     
     def update_command_execution(
         self,
@@ -104,11 +129,30 @@ class Database:
         user_feedback: int = 0
     ):
         with sqlite3.connect(self.db_path) as conn:
+            # Get current execution_timestamps
+            cursor = conn.execute("""
+                SELECT execution_timestamps FROM command_history WHERE id = ?
+            """, (command_id,))
+            row = cursor.fetchone()
+            
+            timestamps = []
+            if row and row[0]:
+                try:
+                    timestamps = json.loads(row[0])
+                except (json.JSONDecodeError, TypeError):
+                    timestamps = []
+            
+            # Add current execution timestamp
+            current_time = datetime.now().isoformat()
+            timestamps.append(current_time)
+            
             conn.execute("""
                 UPDATE command_history 
-                SET executed = ?, execution_result = ?, user_feedback = ?
+                SET executed = ?, execution_result = ?, user_feedback = ?,
+                    execution_timestamps = ?, timestamp = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (executed, execution_result, user_feedback, command_id))
+            """, (executed, execution_result, user_feedback, 
+                  json.dumps(timestamps), command_id))
             conn.commit()
     
     def get_command_history(
@@ -141,6 +185,13 @@ class Database:
                 result = dict(row)
                 if result.get("context_data"):
                     result["context_data"] = json.loads(result["context_data"])
+                if result.get("execution_timestamps"):
+                    result["execution_timestamps"] = json.loads(result["execution_timestamps"])
+                    result["execution_count"] = len(result["execution_timestamps"])
+                else:
+                    result["execution_timestamps"] = []
+                    # For old records without execution_timestamps, show 1 if executed, 0 otherwise
+                    result["execution_count"] = 1 if result.get("executed") else 0
                 results.append(result)
             
             return results
@@ -175,6 +226,13 @@ class Database:
                 result = dict(row)
                 if result.get("context_data"):
                     result["context_data"] = json.loads(result["context_data"])
+                if result.get("execution_timestamps"):
+                    result["execution_timestamps"] = json.loads(result["execution_timestamps"])
+                    result["execution_count"] = len(result["execution_timestamps"])
+                else:
+                    result["execution_timestamps"] = []
+                    # For old records without execution_timestamps, show 1 if executed, 0 otherwise
+                    result["execution_count"] = 1 if result.get("executed") else 0
                 results.append(result)
             
             return results
