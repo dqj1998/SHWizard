@@ -81,6 +81,29 @@ class HistoryManager:
         
         return unique_commands
     
+    def search_by_keywords(
+        self,
+        keywords: List[str],
+        limit: int = 10,
+        context: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Search command history by keywords and return results ranked by keyword match count.
+        
+        Args:
+            keywords: List of keywords to search for
+            limit: Maximum number of results to return
+            context: Optional context for additional scoring
+        
+        Returns:
+            List of command history entries with keyword_match_count field
+        """
+        return self.db.search_by_keywords(
+            keywords=keywords,
+            limit=limit,
+            executed_only=True
+        )
+    
     def _calculate_priority_score(
         self,
         cmd_data: Dict[str, Any],

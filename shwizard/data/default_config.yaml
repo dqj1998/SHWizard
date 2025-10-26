@@ -29,6 +29,7 @@ history:
   max_entries: 10000
   database_path: "~/.shwizard/history.db"
   priority_search: true
+  keyword_search: true
   search_weight:
     frequency: 0.4
     recency: 0.3

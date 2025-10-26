@@ -237,6 +237,83 @@ class Database:
             
             return results
     
+    def search_by_keywords(
+        self,
+        keywords: List[str],
+        limit: int = 10,
+        executed_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Search command history by keywords and rank by keyword match count.
+        
+        Args:
+            keywords: List of keywords to search for
+            limit: Maximum number of results to return
+            executed_only: If True, only return executed commands
+        
+        Returns:
+            List of command history entries sorted by keyword match count (descending)
+        """
+        if not keywords:
+            return []
+        
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            # Build LIKE conditions for each keyword
+            conditions = []
+            params: List[Any] = []
+            for keyword in keywords:
+                conditions.append("(user_query LIKE ? OR generated_command LIKE ?)")
+                params.append(f"%{keyword}%")
+                params.append(f"%{keyword}%")
+            
+            sql = f"""
+                SELECT * FROM command_history 
+                WHERE ({' OR '.join(conditions)})
+            """
+            
+            if executed_only:
+                sql += " AND executed = ?"
+                params.append(1)
+            
+            sql += " ORDER BY timestamp DESC"
+            
+            cursor = conn.execute(sql, params)
+            rows = cursor.fetchall()
+            
+            # Calculate keyword match count for each result
+            results_with_score = []
+            for row in rows:
+                result = dict(row)
+                if result.get("context_data"):
+                    result["context_data"] = json.loads(result["context_data"])
+                if result.get("execution_timestamps"):
+                    result["execution_timestamps"] = json.loads(result["execution_timestamps"])
+                    result["execution_count"] = len(result["execution_timestamps"])
+                else:
+                    result["execution_timestamps"] = []
+                    result["execution_count"] = 1 if result.get("executed") else 0
+                
+                # Count matching keywords (case-insensitive)
+                user_query_lower = result.get("user_query", "").lower()
+                command_lower = result.get("generated_command", "").lower()
+                match_count = sum(
+                    1 for kw in keywords 
+                    if kw.lower() in user_query_lower or kw.lower() in command_lower
+                )
+                
+                result["keyword_match_count"] = match_count
+                results_with_score.append(result)
+            
+            # Sort by keyword match count (descending), then by timestamp (descending)
+            results_with_score.sort(
+                key=lambda x: (x["keyword_match_count"], x.get("timestamp", "")),
+                reverse=True
+            )
+            
+            return results_with_score[:limit]
+    
     def get_command_statistics(self) -> Dict[str, Any]:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""

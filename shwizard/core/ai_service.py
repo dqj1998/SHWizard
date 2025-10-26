@@ -1,7 +1,7 @@
 import requests
 import time
 import atexit
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from shwizard.llm.ollama_manager import OllamaManager
 from shwizard.utils.prompt_utils import build_command_prompt, build_explain_prompt, parse_command_response
 from shwizard.utils.logger import get_logger
@@ -66,16 +66,11 @@ class AIService:
         
         for attempt in range(self.max_retries):
             try:
-                response, feedback = self._call_ollama(prompt)
+                response, _ = self._call_ollama(prompt)
                 if response:
                     commands = parse_command_response(response)
                     if commands:
                         logger.info(f"Generated {len(commands)} command(s)")
-                        # Update feedback in the history manager
-                        command_id = context.get("command_id")
-                        if command_id is not None:
-                            history_manager = HistoryManager()
-                            history_manager.add_feedback(command_id, feedback)
                         return commands
                 
                 logger.warning(f"Attempt {attempt + 1} failed, retrying...")
@@ -90,9 +85,8 @@ class AIService:
         return []
     
     def explain_command(self, command: str, context: Dict[str, Any]) -> Optional[str]:
-        if not self._initialized:
-            if not self.initialize():
-                return None
+        if not self._initialized and not self.initialize():
+            return None
         
         prompt = build_explain_prompt(
             command=command,
@@ -101,12 +95,49 @@ class AIService:
         )
         
         try:
-            return self._call_ollama(prompt)
+            response, _ = self._call_ollama(prompt)
+            return response
         except Exception as e:
             logger.error(f"Error explaining command: {e}")
             return None
     
-    def _call_ollama(self, prompt: str, system_prompt: Optional[str] = None) -> Optional[str]:
+    def extract_keywords(self, user_query: str, max_keywords: int = 6) -> List[str]:
+        """
+        Extract up to max_keywords keywords from user query using LLM.
+        
+        Args:
+            user_query: The user's natural language input
+            max_keywords: Maximum number of keywords to extract (default: 6)
+        
+        Returns:
+            List of extracted keywords
+        """
+        if not self._initialized and not self.initialize():
+            return []
+        
+        prompt = f"""Extract the most important keywords from the following text for searching command history.
+Return ONLY the keywords separated by commas, no explanations, no numbering, maximum {max_keywords} keywords.
+Focus on technical terms, actions, file types, and specific operations.
+
+Text: {user_query}
+
+Keywords:"""
+        
+        try:
+            response, _ = self._call_ollama(prompt)
+            if response:
+                # Parse comma-separated keywords
+                keywords = [k.strip() for k in response.split(',')]
+                # Remove empty strings and limit to max_keywords
+                keywords = [k for k in keywords if k][:max_keywords]
+                logger.info(f"Extracted {len(keywords)} keywords: {keywords}")
+                return keywords
+            return []
+        except Exception as e:
+            logger.error(f"Error extracting keywords: {e}")
+            return []
+    
+    def _call_ollama(self, prompt: str, system_prompt: Optional[str] = None) -> Tuple[Optional[str], int]:
         try:
             payload = {
                 "model": self.model,
@@ -126,10 +157,10 @@ class AIService:
             response.raise_for_status()
             data = response.json()
             
-            response = data.get("response", "").strip()
+            response_text = data.get("response", "").strip()
             # Determine feedback based on response content
-            feedback = 1 if "error" not in response.lower() else -1
-            return response, feedback
+            feedback = 1 if "error" not in response_text.lower() else -1
+            return response_text, feedback
         except requests.exceptions.Timeout:
             logger.error("Request to Ollama timed out")
             return None, 0

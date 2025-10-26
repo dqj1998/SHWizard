@@ -91,7 +91,23 @@ UI_STRINGS = {
     },
     "select_command_prompt": {
         "en": "Select command [1-{max}] or 'q' to quit",
-        "zh": "选择要执行的命令 [1-{max}]，或输入 'q' 退出",
+        "zh": "选择命令 [1-{max}]，或输入 'q' 退出",
+    },
+    "selection_hint": {
+        "en": "Tip: Enter number to review/edit, or !number (e.g., !1) to execute directly",
+        "zh": "提示：输入数字可查看/编辑命令，或输入 !数字 (如 !1) 直接执行",
+    },
+    "selected_command": {
+        "en": "Selected command",
+        "zh": "已选择的命令",
+    },
+    "edit_or_execute_prompt": {
+        "en": "Press Enter or 'e' to execute, 'm' to modify, 'q' to cancel",
+        "zh": "按 Enter 或 'e' 执行，'m' 修改，'q' 取消",
+    },
+    "modify_command_prompt": {
+        "en": "Modify command",
+        "zh": "修改命令",
     },
     "enter_number_between": {
         "en": "Please enter a number between 1 and {max}",
