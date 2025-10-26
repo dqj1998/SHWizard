@@ -13,7 +13,7 @@ class AIService:
     def __init__(
         self,
         ollama_manager: Optional[OllamaManager] = None,
-        model: str = "gemma3:270m",
+        model: str = "gemma3:4b",
         base_url: str = "http://localhost:11435",
         timeout: int = 60,
         max_retries: int = 3
@@ -66,11 +66,16 @@ class AIService:
         
         for attempt in range(self.max_retries):
             try:
-                response = self._call_ollama(prompt)
+                response, feedback = self._call_ollama(prompt)
                 if response:
                     commands = parse_command_response(response)
                     if commands:
                         logger.info(f"Generated {len(commands)} command(s)")
+                        # Update feedback in the history manager
+                        command_id = context.get("command_id")
+                        if command_id is not None:
+                            history_manager = HistoryManager()
+                            history_manager.add_feedback(command_id, feedback)
                         return commands
                 
                 logger.warning(f"Attempt {attempt + 1} failed, retrying...")
@@ -121,17 +126,19 @@ class AIService:
             response.raise_for_status()
             data = response.json()
             
-            return data.get("response", "").strip()
-            
+            response = data.get("response", "").strip()
+            # Determine feedback based on response content
+            feedback = 1 if "error" not in response.lower() else -1
+            return response, feedback
         except requests.exceptions.Timeout:
             logger.error("Request to Ollama timed out")
-            return None
+            return None, 0
         except requests.exceptions.RequestException as e:
             logger.error(f"Request to Ollama failed: {e}")
-            return None
+            return None, 0
         except Exception as e:
             logger.error(f"Unexpected error calling Ollama: {e}")
-            return None
+            return None, 0
     
     def shutdown(self):
         if self.ollama_manager and self.ollama_manager.embedded:

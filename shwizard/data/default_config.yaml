@@ -2,16 +2,18 @@ ollama:
   embedded: true
   auto_download: true
   base_url: "http://localhost:11435"
-  model: "gemma3:270m"
   timeout: 60
   max_retries: 3
   
   download:
     models:
       - name: "gemma3:270m"
-        size: "270MB"
         default: true
     install_path: "~/.shwizard/ollama"
+    urls:
+      linux: "https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tgz"
+      macos: "https://github.com/ollama/ollama/releases/latest/download/ollama-darwin.tgz"
+      windows: "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
 
 safety:
   enabled: true

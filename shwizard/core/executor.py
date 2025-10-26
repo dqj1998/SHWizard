@@ -4,12 +4,14 @@ from shwizard.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-
 class CommandExecutor:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
     
     def execute(self, command: str, timeout: Optional[int] = None) -> Tuple[bool, str]:
+        if command.startswith('/'):
+            return True, "Command not logged because it starts with '/'"
+            
         if self.dry_run:
             logger.info(f"[DRY RUN] Would execute: {command}")
             return True, "[DRY RUN] Command not actually executed"
@@ -45,3 +47,4 @@ class CommandExecutor:
     def set_dry_run(self, enabled: bool):
         self.dry_run = enabled
         logger.info(f"Dry run mode: {'enabled' if enabled else 'disabled'}")
+

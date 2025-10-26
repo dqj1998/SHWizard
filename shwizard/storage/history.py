@@ -35,15 +35,16 @@ class HistoryManager:
             command_id=command_id,
             executed=True,
             execution_result=result,
-            user_feedback=0
+            user_feedback=success and 1 or 0
         )
     
     def add_feedback(self, command_id: int, feedback: int):
-        self.db.update_command_execution(
-            command_id=command_id,
-            executed=True,
-            user_feedback=feedback
-        )
+        if feedback >= 0:
+            self.db.update_command_execution(
+                command_id=command_id,
+                executed=True,
+                user_feedback=feedback
+            )
     
     def search_relevant_commands(
         self,
@@ -102,8 +103,6 @@ class HistoryManager:
         feedback = cmd_data.get("user_feedback", 0)
         if feedback > 0:
             success_score = 1.0
-        elif feedback < 0:
-            success_score = 0.0
         else:
             success_score = 0.5 if cmd_data.get("executed") else 0.3
         
