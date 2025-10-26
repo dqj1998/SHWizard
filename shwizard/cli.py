@@ -114,7 +114,7 @@ def handle_cd(command_str: str, tokens: List[str], history_manager, context, lan
 @click.argument('query', nargs=-1, required=False)
 @click.option('--interactive', '-i', is_flag=True, help='Start interactive mode')
 @click.option('--explain', '-e', is_flag=True, help='Explain a command')
-@click.option('--history', '-h', is_flag=True, help='View command history')
+@click.option('--history', '-h', '-hi', is_flag=True, help='View command history')
 @click.option('--dry-run', '-d', is_flag=True, help='Show commands without executing')
 @click.option('--no-safety', is_flag=True, help='Disable safety checks')
 @click.option('--config-path', type=click.Path(), help='Custom config file path')
@@ -122,30 +122,35 @@ def handle_cd(command_str: str, tokens: List[str], history_manager, context, lan
 def main(ctx, query, interactive, explain, history, dry_run, no_safety, config_path):
     if ctx.invoked_subcommand is not None:
         return
-    
+
     config = ConfigManager()
     global logger
     logger = init_logger(config)
     
-    if history:
-        show_history(config)
-        return
-    
-    if interactive:
-        interactive_mode(config, dry_run, not no_safety)
-        return
-    
-    if not query:
-        interactive_mode(config, dry_run, not no_safety)
-        return
-    
-    query_text = " ".join(query)
-    
-    if explain:
-        explain_command(query_text, config)
-    else:
-        process_query(query_text, config, dry_run, not no_safety)
+    try:
+        if history:
+            show_history(config)
+            return
 
+        if interactive:
+            interactive_mode(config, dry_run, not no_safety)
+            return
+
+        if not query:
+            interactive_mode(config, dry_run, not no_safety)
+            return
+
+        query_text = " ".join(query)
+
+        if explain:
+            explain_command(query_text, config)
+        else:
+            process_query(query_text, config, dry_run, not no_safety)
+
+    except Exception as e:
+        if logger:
+            logger.error(f"Unexpected error: {e}", exc_info=True)
+        console.print(f"[red]❌ Error: {e}[/red]")
 
 def process_query(query: str, config: ConfigManager, dry_run: bool = False, safety_enabled: bool = True):
     ai_service = AIService(
@@ -210,9 +215,12 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
                 if not confirm_dangerous_command(query, check_result, lang, translator):
                     console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
                     return
-            
+        
             # Record and execute directly (no generic execution confirmation for direct non-high-risk commands)
-            command_id = history_manager.add_command(query, query, context)
+            # Skip recording internal shortcut commands (starting with /)
+            command_id = None
+            if not query.startswith('/'):
+                command_id = history_manager.add_command(query, query, context)
             success, output = executor.execute(query)
             
             if output:
@@ -221,7 +229,8 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
                 _text = Text.from_ansi(_san)
                 console.print(Panel(_text, expand=True))
             
-            history_manager.mark_executed(command_id, success, output[:500] if output else None)
+            if command_id is not None:
+                history_manager.mark_executed(command_id, success, output[:500] if output else None)
             
             # Skip post-execution feedback prompts for direct commands
             return
@@ -232,8 +241,7 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
                 if not ai_service.initialize():
                     console.print("[red]❌ Failed to initialize AI service[/red]")
                     console.print("[yellow]Please ensure Ollama is installed and running[/yellow]")
-                    return
-            
+                
             relevant_commands = []
             if config.get("history.priority_search", True):
                 relevant_commands = history_manager.search_relevant_commands(query, limit=5, context=context)
@@ -245,24 +253,25 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
             
             if not commands:
                 console.print("[red]❌ Failed to generate commands[/red]")
-                return
-            
+                
             console.print(f"[green]✅ Generated {len(commands)} command(s):[/green]\n")
             
             selected_command, selected_by_number = select_command(commands, safety_checker, config, lang, translator)
             
             if not selected_command:
                 console.print("[yellow]Operation cancelled[/yellow]")
-                return
             
-            command_id = history_manager.add_command(query, selected_command, context)
+            # Skip recording if query is an internal shortcut command
+            command_id = None
+            if not query.startswith('/'):
+                command_id = history_manager.add_command(query, selected_command, context)
             
             # Keep generic execution confirmation only for AI-generated commands
             if config.get("ui.confirm_execution", True) and not dry_run and not selected_by_number:
                 if not Confirm.ask(f"\n🚀 {tr_llm('execute_this_command', lang, translator)}", default=True):
                     console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
                     return
-            
+                
             success, output = executor.execute(selected_command)
             
             if output:
@@ -271,14 +280,9 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
                 _text = Text.from_ansi(_san)
                 console.print(Panel(_text, expand=True))
             
-            history_manager.mark_executed(command_id, success, output[:500] if output else None)
-            
-            if success and not dry_run:
-                if Confirm.ask("\n✨ Was this helpful?", default=True):
-                    history_manager.add_feedback(command_id, 1)
-                else:
-                    history_manager.add_feedback(command_id, -1)
-        
+            if command_id is not None:
+                history_manager.mark_executed(command_id, success, output[:500] if output else None)
+                
     except KeyboardInterrupt:
         console.print("\n[yellow]Operation cancelled by user[/yellow]")
     except Exception as e:
@@ -329,28 +333,28 @@ def select_command(commands: List[str], safety_checker: SafetyChecker, config: C
             default="1"
         )
         
-        if choice.lower() == 'q':
-            return None, False
-        
-        try:
-            idx = int(choice) - 1
-            if 0 <= idx < len(commands):
-                selected = commands[idx]
-                check_result = safety_checker.check_command(selected)
-                
-                if check_result.is_blocked():
-                    console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
-                    continue
-                
-                if check_result.needs_confirmation():
-                    if not confirm_dangerous_command(selected, check_result, lang, translator):
-                        continue
-                
-                return selected, True
-            else:
-                console.print(f"[red]{tr_llm('enter_number_between', lang, translator, max=len(commands))}[/red]")
-        except ValueError:
-            console.print(f"[red]{tr_llm('invalid_input', lang, translator)}[/red]")
+        while True:
+            if choice.lower() == 'q':
+                return None, False
+            
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(commands):
+                    selected = commands[idx]
+                    check_result = safety_checker.check_command(selected)
+                    
+                    if check_result.is_blocked():
+                        console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+                    
+                    if check_result.needs_confirmation():
+                        if not confirm_dangerous_command(selected, check_result, lang, translator):
+                            return None
+
+                        return selected, True
+                else:
+                    console.print(f"[red]{tr_llm('enter_number_between', lang, translator, max=len(commands))}[/red]")
+            except ValueError:
+                console.print(f"[red]{tr_llm('invalid_input', lang, translator)}[/red]")
 
 
 def display_command_with_safety(command: str, check_result, index: int = 1, lang: str = "en", translator: LLMTranslator = None):
@@ -396,8 +400,7 @@ def explain_command(command: str, config: ConfigManager):
             with console.status("[bold green]Initializing AI service..."):
                 if not ai_service.initialize():
                     console.print("[red]❌ Failed to initialize AI service[/red]")
-                    return
-            
+                    
             with console.status("[bold green]Generating explanation..."):
                 explanation = ai_service.explain_command(command, context)
             
@@ -438,8 +441,7 @@ def show_history(config: ConfigManager):
     stats = history_manager.get_statistics()
     console.print(f"\n[dim]Total: {stats['total_commands']} | "
                   f"Executed: {stats['executed_commands']} | "
-                  f"👍 {stats['positive_feedback']} | "
-                  f"👎 {stats['negative_feedback']}[/dim]")
+                  f"👍 {stats['positive_feedback']}")
 
 
 def create_prompt_session(config: ConfigManager, history_manager: HistoryManager, ai_service: AIService) -> PromptSession:
@@ -469,17 +471,17 @@ def create_prompt_session(config: ConfigManager, history_manager: HistoryManager
         buf = event.current_buffer
         buf.cursor_position += buf.document.get_end_of_line_position()
 
-    # Quick toggle mouse support with F9: exit prompt with sentinel so loop restarts with new setting
+    # Quick toggle mouse support with F9: toggle in-place without exiting prompt
     @kb.add("f9")
     def _(event):
         try:
             current = bool(config.get("ui.mouse_support", True))
-            config.set("ui.mouse_support", not current)
+            new_state = not current
+            config.set("ui.mouse_support", new_state)
+            set_mouse_mode(new_state)
         except Exception as e:
             if logger:
                 logger.warning(f"Failed to toggle mouse_support via F9: {e}")
-        # Exit current prompt and return a sentinel
-        event.app.exit(result="__MOUSE_TOGGLE__")
 
     # Optional editing mode from config: "emacs" or "vi"
     editing_mode_key = str(config.get("ui.editing_mode", "emacs")).lower()
@@ -518,8 +520,7 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
         with console.status("[bold green]Initializing AI service..."):
             if not ai_service.initialize():
                 console.print("[red]❌ Failed to initialize AI service[/red]")
-                return
-        
+            
         console.print("[green]✅ Ready![/green]\n")
         session = create_prompt_session(config, history_manager, ai_service)
         # Ensure native selection works by default
@@ -566,13 +567,6 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                         mouse_support=mouse_support
                     ).strip()
                 
-                if query == "__MOUSE_TOGGLE__":
-                    new_state = bool(config.get("ui.mouse_support", True))
-                    state = "enabled" if new_state else "disabled"
-                    console.print(f"[green]Mouse support {state}[/green]")
-                    console.print("[dim]Tip: With mouse support enabled, some terminals require holding Shift to select text. Use /mouse off to select freely.[/dim]")
-                    set_mouse_mode(new_state)
-                    continue
                 if not query:
                     continue
                 
@@ -580,7 +574,7 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                     console.print("[yellow]Goodbye![/yellow]")
                     break
                 
-                if query == "/help":
+                if query == "/help" or query == "/h":
                     show_help()
                     if bool(config.get("ui.mouse_auto_mode", True)):
                         try:
@@ -590,8 +584,8 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                             if logger:
                                 logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
                     continue
-                
-                if query == "/history":
+
+                if query == "/history" or query == "/hi":
                     show_history(config)
                     if bool(config.get("ui.mouse_auto_mode", True)):
                         try:
@@ -601,14 +595,13 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                             if logger:
                                 logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
                     continue
-                
-                if query == "/stats":
+
+                if query == "/stats" or query == "/s":
                     stats = history_manager.get_statistics()
                     console.print(f"\n📊 [bold]Statistics:[/bold]")
                     console.print(f"Total commands: {stats['total_commands']}")
                     console.print(f"Executed: {stats['executed_commands']}")
                     console.print(f"👍 Positive feedback: {stats['positive_feedback']}")
-                    console.print(f"👎 Negative feedback: {stats['negative_feedback']}\n")
                     if bool(config.get("ui.mouse_auto_mode", True)):
                         try:
                             config.set("ui.mouse_support", False)
@@ -619,7 +612,7 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                     continue
 
                 # Toggle mouse support to allow selecting/copying previous outputs when off
-                if query.startswith("/mouse"):
+                if query.startswith("/mouse") or query == "/m":
                     parts = query.split()
                     if len(parts) == 1 or parts[1].lower() == "toggle":
                         mouse_support = not mouse_support
@@ -641,7 +634,6 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                     continue
 
                 # Auto mode: enable/disable mouse by state
-                if query.startswith("/mouse-auto"):
                     parts = query.split()
                     if len(parts) == 1:
                         auto_state = bool(config.get("ui.mouse_auto_mode", True))
@@ -662,11 +654,9 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                         console.print(f"[green]Auto mouse mode {'enabled' if auto_state else 'disabled'}[/green]")
                         if auto_state:
                             console.print("[dim]Auto mode: Mouse is OFF after output for easy selection; use F9 or /mouse on when you need click-to-move.[/dim]")
-                        continue
                     else:
-                        console.print("[yellow]Usage: /mouse-auto [on|off][/yellow]")
-                        continue
-                
+                                            continue
+                    
                 process_query(query, config, dry_run, safety_enabled)
                 console.print()
                 # Auto mode: after output, disable mouse to allow selection
@@ -677,7 +667,7 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                     except Exception as e:
                         if logger:
                             logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
-                
+            
             except KeyboardInterrupt:
                 console.print("\n[yellow]Use /quit to exit[/yellow]")
             except Exception as e:
@@ -694,8 +684,14 @@ def show_help():
   /history   - View command history
   /stats     - Show usage statistics
   /mouse     - Toggle mouse support: /mouse [on|off|toggle]
-  /mouse-auto - Auto mouse mode: off after output for easy selection; toggle on with F9 or /mouse. Usage: /mouse-auto [on|off]
   /quit      - Exit interactive mode
+
+[bold]Shortcuts:[/bold]
+  /h         - Shortcut for /help
+  /hi        - Shortcut for /history
+  /s         - Shortcut for /stats
+  /m         - Shortcut for /mouse
+  /q         - Shortcut for /quit
 
 [bold]Usage:[/bold]
   Just type what you want to do in natural language!

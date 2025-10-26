@@ -7,7 +7,7 @@ ollama:
   
   download:
     models:
-      - name: "gemma3:4b"
+      - name: "gemma3:270m"
         default: true
     install_path: "~/.shwizard/ollama"
     urls:

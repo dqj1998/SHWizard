@@ -1,7 +1,7 @@
 import sqlite3
 import json
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import List, Optional, Dict, Any, Tuple
 from shwizard.utils.platform_utils import get_data_directory
 from shwizard.utils.logger import get_logger
@@ -11,9 +11,19 @@ logger = get_logger(__name__)
 
 class Database:
     def __init__(self, db_path: Optional[Path] = None):
-        if db_path is None:
+        if isinstance(db_path, str) and db_path == ":memory:":
+            self.db_path = db_path
+            self.in_memory = True
+            if self.in_memory:
+                self._init_database()
+        elif db_path is None:
             db_path = get_data_directory() / "history.db"
-        
+            self.db_path: Path = db_path
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._init_database()
+            return
+        self.in_memory = False
+        db_path = get_data_directory() / "history.db"
         self.db_path: Path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_database()
@@ -175,8 +185,7 @@ class Database:
                 SELECT 
                     COUNT(*) as total_commands,
                     SUM(CASE WHEN executed = 1 THEN 1 ELSE 0 END) as executed_commands,
-                    SUM(CASE WHEN user_feedback > 0 THEN 1 ELSE 0 END) as positive_feedback,
-                    SUM(CASE WHEN user_feedback < 0 THEN 1 ELSE 0 END) as negative_feedback
+                    SUM(CASE WHEN user_feedback > 0 THEN 1 ELSE 0 END) as positive_feedback
                 FROM command_history
             """)
             row = cursor.fetchone()
@@ -184,8 +193,7 @@ class Database:
             return {
                 "total_commands": row[0] or 0,
                 "executed_commands": row[1] or 0,
-                "positive_feedback": row[2] or 0,
-                "negative_feedback": row[3] or 0
+                "positive_feedback": row[2] or 0
             }
     
     def set_preference(self, key: str, value: str):
