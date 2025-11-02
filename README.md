@@ -83,6 +83,8 @@ shwizard> List all running Docker containers
 shwizard> Find code files containing TODO
 shwizard> /history  # View history
 shwizard> /stats    # View statistics
+shwizard> /export   # Export history database
+shwizard> /import ~/backup.db  # Import history database
 shwizard> /quit     # Exit
 ```
 
@@ -270,6 +272,16 @@ shwizard config ollama.model llama2
 
 ### 3. Where is the history stored?
 By default at `~/.local/share/shwizard/history.db`
+
+You can easily backup and migrate your history:
+```bash
+# In interactive mode
+shwizard -i
+/export ~/my_backup.db     # Export history
+/import ~/my_backup.db     # Import history
+```
+
+See [EXPORT_IMPORT_GUIDE.md](EXPORT_IMPORT_GUIDE.md) for detailed usage.
 
 ### 4. How do I customize dangerous command rules?
 Edit `~/.shwizard/custom_rules.yaml`

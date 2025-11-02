@@ -1,7 +1,10 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
+from pathlib import Path
+import shutil
 from shwizard.storage.database import Database
 from shwizard.utils.logger import get_logger
+from shwizard.utils.platform_utils import get_home_directory
 
 logger = get_logger(__name__)
 
@@ -81,6 +84,29 @@ class HistoryManager:
         
         return unique_commands
     
+    def search_by_keywords(
+        self,
+        keywords: List[str],
+        limit: int = 10,
+        context: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Search command history by keywords and return results ranked by keyword match count.
+        
+        Args:
+            keywords: List of keywords to search for
+            limit: Maximum number of results to return
+            context: Optional context for additional scoring
+        
+        Returns:
+            List of command history entries with keyword_match_count field
+        """
+        return self.db.search_by_keywords(
+            keywords=keywords,
+            limit=limit,
+            executed_only=True
+        )
+    
     def _calculate_priority_score(
         self,
         cmd_data: Dict[str, Any],
@@ -141,3 +167,131 @@ class HistoryManager:
 
     def cleanup(self, max_entries: int = 10000):
         self.db.cleanup_old_entries(max_entries)
+    
+    def export_database(self, export_path: Optional[str] = None) -> Path:
+        """
+        Export the history database to a backup file.
+        
+        Args:
+            export_path: Optional path where to export the database.
+                        If not provided, exports to ~/shwizard_backup.db
+        
+        Returns:
+            Path to the exported database file
+        
+        Raises:
+            FileNotFoundError: If the source database doesn't exist
+            PermissionError: If unable to write to the destination
+            ValueError: If trying to export an in-memory database
+        """
+        # Get the source database path
+        source_path = self.db.db_path
+        
+        # Check if source is in-memory (shouldn't be for export)
+        if isinstance(source_path, str) and source_path == ":memory:":
+            raise ValueError("Cannot export in-memory database")
+        
+        if self.db.in_memory:
+            raise ValueError("Cannot export in-memory database")
+        
+        if export_path:
+            dest_path = Path(export_path).expanduser().resolve()
+        else:
+            dest_path = get_home_directory() / "shwizard_backup.db"
+        
+        if not Path(source_path).exists():
+            raise FileNotFoundError(f"Source database not found: {source_path}")
+        
+        # Create parent directory if it doesn't exist
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Copy the database file
+        try:
+            shutil.copy2(source_path, dest_path)
+            logger.info(f"Exported database from {source_path} to {dest_path}")
+        except Exception as e:
+            logger.error(f"Failed to export database: {e}")
+            raise
+        
+        return dest_path
+    
+    def import_database(self, import_path: str, merge: bool = True) -> None:
+        """
+        Import a history database from a backup file.
+        
+        Args:
+            import_path: Path to the database file to import
+            merge: If True, merge with existing database. If False, replace entirely.
+        
+        Raises:
+            FileNotFoundError: If the import file doesn't exist
+            ValueError: If the import file is not a valid SQLite database or trying to import into in-memory database
+        """
+        source_path = Path(import_path).expanduser().resolve()
+        
+        if not source_path.exists():
+            raise FileNotFoundError(f"Import file not found: {source_path}")
+        
+        # Get the destination database path
+        dest_path = self.db.db_path
+        
+        if isinstance(dest_path, str) and dest_path == ":memory:":
+            raise ValueError("Cannot import into in-memory database")
+        
+        if self.db.in_memory:
+            raise ValueError("Cannot import into in-memory database")
+        
+        if merge:
+            # Merge: Import all records from source into destination
+            try:
+                import sqlite3
+                
+                # Connect to both databases
+                with sqlite3.connect(dest_path) as dest_conn:
+                    # Attach source database
+                    dest_conn.execute(f"ATTACH DATABASE '{source_path}' AS import_db")
+                    
+                    # Import command_history, avoiding duplicates based on query+command combination
+                    # Use NOT EXISTS to skip records that already exist
+                    dest_conn.execute("""
+                        INSERT INTO command_history 
+                        (timestamp, user_query, generated_command, executed, execution_result,
+                         risk_level, user_feedback, platform, working_directory, context_data, execution_timestamps)
+                        SELECT timestamp, user_query, generated_command, executed, execution_result,
+                               risk_level, user_feedback, platform, working_directory, context_data, execution_timestamps
+                        FROM import_db.command_history AS import_ch
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM command_history AS dest_ch
+                            WHERE dest_ch.user_query = import_ch.user_query
+                              AND dest_ch.generated_command = import_ch.generated_command
+                        )
+                    """)
+                    
+                    # Import user_preferences (update existing, insert new)
+                    dest_conn.execute("""
+                        INSERT OR REPLACE INTO user_preferences 
+                        SELECT * FROM import_db.user_preferences
+                    """)
+                    
+                    dest_conn.commit()
+                    dest_conn.execute("DETACH DATABASE import_db")
+                    
+                logger.info(f"Merged database from {source_path} into {dest_path}")
+            except Exception as e:
+                logger.error(f"Failed to merge database: {e}")
+                raise ValueError(f"Failed to import database (possibly invalid format): {e}")
+        else:
+            # Replace: Backup current DB and replace with imported one
+            try:
+                # Create backup of current database
+                if Path(dest_path).exists():
+                    backup_path = Path(dest_path).parent / f"{Path(dest_path).stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                    shutil.copy2(dest_path, backup_path)
+                    logger.info(f"Backed up current database to {backup_path}")
+                
+                # Replace with imported database
+                shutil.copy2(source_path, dest_path)
+                logger.info(f"Replaced database with import from {source_path}")
+            except Exception as e:
+                logger.error(f"Failed to replace database: {e}")
+                raise

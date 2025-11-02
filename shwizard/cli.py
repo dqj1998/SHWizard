@@ -8,6 +8,7 @@ from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from rich.markdown import Markdown
 from rich.text import Text
+from rich import box
 from typing import Optional, List, Tuple
 import readchar
 from prompt_toolkit import PromptSession
@@ -32,7 +33,7 @@ from shwizard.utils.logger import setup_logger, get_logger
 from shwizard.utils.input_utils import is_command_input
 from shwizard.utils.i18n import LLMTranslator, tr_llm, translate_rule_description_llm
 from shwizard.utils.completion import ShellCompleter
-from shwizard.utils.output_utils import sanitize_output
+from shwizard.utils.output_utils import sanitize_output, display_paginated_output, should_paginate_output
 
 console = Console()
 logger = None
@@ -153,7 +154,17 @@ def main(ctx, query, interactive, explain, history, dry_run, no_safety, config_p
             logger.error(f"Unexpected error: {e}", exc_info=True)
         console.print(f"[red]❌ Error: {e}[/red]")
 
-def process_query(query: str, config: ConfigManager, dry_run: bool = False, safety_enabled: bool = True):
+def process_query(query: str, config: ConfigManager, dry_run: bool = False, safety_enabled: bool = True, interactive_session=None):
+    """
+    Process a query and optionally return a command for interactive editing.
+    
+    Args:
+        interactive_session: If True, enables returning selected command for editing in interactive mode.
+    
+    Returns:
+        str or None: Selected command string if interactive_session is True and user chose to edit,
+                    None if command was executed or cancelled.
+    """
     ai_service = AIService(
         model=config.get("ollama.model", "gemma3:270m"),
         base_url=config.get("ollama.base_url", "http://localhost:11435"),
@@ -226,9 +237,12 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
             
             if output:
                 console.print(f"\n[bold]{tr_llm('output_label', lang, translator)}:[/bold]")
-                _san = sanitize_output(output)
-                _text = Text.from_ansi(_san)
-                console.print(Panel(_text, expand=True))
+                if should_paginate_output(output):
+                    display_paginated_output(output, console, tr_llm('output_label', lang, translator))
+                else:
+                    _san = sanitize_output(output)
+                    _text = Text.from_ansi(_san)
+                    console.print(Panel(_text, expand=True))
             
             if command_id is not None:
                 history_manager.mark_executed(command_id, success, output[:500] if output else None)
@@ -242,7 +256,236 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
                 if not ai_service.initialize():
                     console.print("[red]❌ Failed to initialize AI service[/red]")
                     console.print("[yellow]Please ensure Ollama is installed and running[/yellow]")
+                    return
+            
+                # Try keyword-based history search first for non-command inputs
+                keyword_history_results = []
+                if config.get("history.keyword_search", True):
+                    with console.status("[bold green]Extracting keywords and searching history..."):
+                        keywords = ai_service.extract_keywords(query, max_keywords=6)
+                        if keywords:
+                            if logger:
+                                logger.info(f"Searching history with keywords: {keywords}")
+                            keyword_history_results = history_manager.search_by_keywords(
+                                keywords=keywords,
+                                limit=8,  # Limit to 8 for single-key selection (1-8)
+                                context=context
+                            )            # If history search returns results, show them to user for selection
+            if keyword_history_results:
+                console.print(f"[green]✅ Found {len(keyword_history_results)} matching command(s) from history:[/green]\n")
                 
+                # Display history commands with keyword match counts (max 8 for single-key selection)
+                for idx, entry in enumerate(keyword_history_results[:8], 1):
+                    cmd = entry.get("generated_command", "")
+                    match_count = entry.get("keyword_match_count", 0)
+                    exec_count = entry.get("execution_count", 0)
+                    
+                    # Perform safety check
+                    check_result = safety_checker.check_command(cmd)
+                    
+                    # Display with safety indicator and match info
+                    emoji = "✅" if check_result.is_safe else "⚠️"
+                    console.print(f"\n{emoji} [bold]{tr_llm('command_label', lang, translator)} {idx}:[/bold] [white]{cmd}[/white]")
+                    console.print(f"   [dim]Keywords matched: {match_count} | Used: {exec_count} times[/dim]")
+                    
+                    if not check_result.is_safe or check_result.needs_warning():
+                        risk_emoji = {"high_risk": "🚨", "medium_risk": "⚠️", "low_risk": "ℹ️"}.get(
+                            check_result.risk_level, ""
+                        )
+                        risk_color = {"high_risk": "red", "medium_risk": "yellow", "low_risk": "blue"}.get(
+                            check_result.risk_level, "white"
+                        )
+                        desc = translate_rule_description_llm(check_result.message, lang, translator)
+                        console.print(f"   {risk_emoji} [{risk_color}]{tr_llm('warning_label', lang, translator)}: {desc}[/{risk_color}]")
+                
+                # Ask user to select from history or continue to AI generation
+                console.print(
+                    "\n" + tr_llm("select_command_prompt", lang, translator, max=len(keyword_history_results)) + 
+                    " [dim](or 'n' for new AI suggestion)[/dim]"
+                )
+                console.print(
+                    f"[dim]{tr_llm('selection_hint', lang, translator)}[/dim] ",
+                    end=""
+                )
+                
+                try:
+                    # First key press
+                    key = readchar.readkey()
+                    console.print(key, end="")
+                    
+                    if key.lower() == 'q':
+                        console.print()
+                        console.print("[yellow]Operation cancelled[/yellow]")
+                        return
+                    
+                    if key.lower() == 'n':
+                        console.print()
+                        # User wants new AI suggestion, continue to AI generation
+                        pass  # Fall through to AI generation
+                    elif key == '!':
+                        # Direct execution mode - wait for number
+                        key2 = readchar.readkey()
+                        console.print(key2)
+                        try:
+                            idx = int(key2) - 1
+                            if 0 <= idx < len(keyword_history_results):
+                                selected = keyword_history_results[idx]["generated_command"]
+                                check_result = safety_checker.check_command(selected)
+                                
+                                if check_result.is_blocked():
+                                    console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+                                    return
+                                
+                                # Safety confirmation for high-risk commands
+                                if check_result.needs_confirmation():
+                                    if not confirm_dangerous_command(selected, check_result, lang, translator):
+                                        console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
+                                        return
+                                
+                                # Record and execute selected command directly
+                                command_id = None
+                                if not query.startswith('/'):
+                                    command_id = history_manager.add_command(query, selected, context)
+                                
+                                success, output = executor.execute(selected)
+                                
+                                if output:
+                                    console.print(f"\n[bold]{tr_llm('output_label', lang, translator)}:[/bold]")
+                                    if should_paginate_output(output):
+                                        display_paginated_output(output, console, tr_llm('output_label', lang, translator))
+                                    else:
+                                        _san = sanitize_output(output)
+                                        _text = Text.from_ansi(_san)
+                                        console.print(Panel(_text, expand=True))
+                                
+                                if command_id is not None:
+                                    history_manager.mark_executed(command_id, success, output[:500] if output else None)
+                                
+                                return
+                            else:
+                                console.print(f"[red]{tr_llm('enter_number_between', lang, translator, max=len(keyword_history_results))}[/red]")
+                                return
+                        except ValueError:
+                            console.print(f"[red]{tr_llm('invalid_input', lang, translator)}[/red]")
+                            return
+                    else:
+                        # Regular number selection - review mode
+                        console.print()
+                        try:
+                            idx = int(key) - 1
+                            if 0 <= idx < len(keyword_history_results):
+                                selected = keyword_history_results[idx]["generated_command"]
+                                check_result = safety_checker.check_command(selected)
+                                
+                                if check_result.is_blocked():
+                                    console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+                                    return
+                                
+                                # Show the command in the prompt for editing
+                                console.print(f"\n[cyan]{tr_llm('selected_command', lang, translator)}:[/cyan] [white]{selected}[/white]\n")
+                                
+                                # In interactive mode, return the selected command for prefilling
+                                if interactive_session:
+                                    return selected
+                                
+                                # Non-interactive mode: execute directly (should not reach here in interactive mode)
+                                return
+                            else:
+                                console.print(f"[red]{tr_llm('enter_number_between', lang, translator, max=len(keyword_history_results))}[/red]")
+                                return
+                        except ValueError:
+                            console.print(f"[red]{tr_llm('invalid_input', lang, translator)}[/red]")
+                            return
+                except Exception as e:
+                    # Fallback to Prompt.ask if readchar fails
+                    if logger:
+                        logger.warning(f"readchar failed, falling back to Prompt.ask: {e}")
+                    console.print()
+                    choice = Prompt.ask("", default="1")
+                    
+                    if choice.lower() == 'q':
+                        console.print("[yellow]Operation cancelled[/yellow]")
+                        return
+                    
+                    if choice.lower() == 'n':
+                        pass  # Fall through to AI generation
+                    else:
+                        # Check if it's direct execution format (!1, !2, etc.)
+                        execute_directly = False
+                        choice_num = choice
+                        if choice.startswith('!'):
+                            execute_directly = True
+                            choice_num = choice[1:]
+                        
+                        try:
+                            idx = int(choice_num) - 1
+                            if 0 <= idx < len(keyword_history_results):
+                                selected = keyword_history_results[idx]["generated_command"]
+                                check_result = safety_checker.check_command(selected)
+                                
+                                if check_result.is_blocked():
+                                    console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+                                    return
+                                
+                                # If user chose to review (not execute directly)
+                                if not execute_directly:
+                                    console.print(f"\n[cyan]{tr_llm('selected_command', lang, translator)}:[/cyan] [white]{selected}[/white]")
+                                    edit_choice = Prompt.ask(
+                                        tr_llm("edit_or_execute_prompt", lang, translator),
+                                        default="e"
+                                    )
+                                    
+                                    if edit_choice.lower() == 'q':
+                                        console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
+                                        return
+                                    elif edit_choice.lower() == 'm':
+                                        modified_cmd = Prompt.ask(
+                                            tr_llm("modify_command_prompt", lang, translator),
+                                            default=selected
+                                        )
+                                        if modified_cmd and modified_cmd.strip():
+                                            selected = modified_cmd.strip()
+                                            check_result = safety_checker.check_command(selected)
+                                            if check_result.is_blocked():
+                                                console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+                                                return
+                                        else:
+                                            console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
+                                            return
+                                
+                                # Safety confirmation for high-risk commands
+                                if check_result.needs_confirmation():
+                                    if not confirm_dangerous_command(selected, check_result, lang, translator):
+                                        console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
+                                        return
+                                
+                                command_id = None
+                                if not query.startswith('/'):
+                                    command_id = history_manager.add_command(query, selected, context)
+                                
+                                success, output = executor.execute(selected)
+                                
+                                if output:
+                                    console.print(f"\n[bold]{tr_llm('output_label', lang, translator)}:[/bold]")
+                                    if should_paginate_output(output):
+                                        display_paginated_output(output, console, tr_llm('output_label', lang, translator))
+                                    else:
+                                        _san = sanitize_output(output)
+                                        _text = Text.from_ansi(_san)
+                                        console.print(Panel(_text, expand=True))
+                                
+                                if command_id is not None:
+                                    history_manager.mark_executed(command_id, success, output[:500] if output else None)
+                                
+                                return
+                            else:
+                                console.print(f"[red]{tr_llm('enter_number_between', lang, translator, max=len(keyword_history_results))}[/red]")
+                                return
+                        except ValueError:
+                            console.print(f"[red]{tr_llm('invalid_input', lang, translator)}[/red]")
+                            return
+            
+            # Continue with AI generation (either no history results or user chose 'n')
             relevant_commands = []
             if config.get("history.priority_search", True):
                 relevant_commands = history_manager.search_relevant_commands(query, limit=5, context=context)
@@ -257,10 +500,16 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
                 
             console.print(f"[green]✅ Generated {len(commands)} command(s):[/green]\n")
             
-            selected_command, selected_by_number = select_command(commands, safety_checker, config, lang, translator)
+            selected_command, selected_by_number = select_command(commands, safety_checker, config, lang, translator, interactive_session)
             
             if not selected_command:
                 console.print("[yellow]Operation cancelled[/yellow]")
+                return
+            
+            # In interactive mode, return command for prefilling
+            if interactive_session and not selected_by_number:
+                # selected_by_number is False means it's for editing (not direct execution via !N)
+                return selected_command
             
             # Skip recording if query is an internal shortcut command
             command_id = None
@@ -269,17 +518,29 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
             
             # Keep generic execution confirmation only for AI-generated commands
             if config.get("ui.confirm_execution", True) and not dry_run and not selected_by_number:
-                if not Confirm.ask(f"\n🚀 {tr_llm('execute_this_command', lang, translator)}", default=True):
-                    console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
-                    return
+                console.print(f"\n🚀 {tr_llm('execute_this_command', lang, translator)} [dim](y/n, default: y)[/dim] ", end="")
+                try:
+                    key = readchar.readkey()
+                    console.print(key)
+                    if key.lower() in ('n', 'q'):
+                        console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
+                        return
+                except Exception:
+                    # Fallback to Confirm.ask if readchar fails
+                    if not Confirm.ask(f"\n🚀 {tr_llm('execute_this_command', lang, translator)}", default=True):
+                        console.print(f"[yellow]{tr_llm('execution_cancelled', lang, translator)}[/yellow]")
+                        return
                 
             success, output = executor.execute(selected_command)
             
             if output:
                 console.print(f"\n[bold]{tr_llm('output_label', lang, translator)}:[/bold]")
-                _san = sanitize_output(output)
-                _text = Text.from_ansi(_san)
-                console.print(Panel(_text, expand=True))
+                if should_paginate_output(output):
+                    display_paginated_output(output, console, tr_llm('output_label', lang, translator))
+                else:
+                    _san = sanitize_output(output)
+                    _text = Text.from_ansi(_san)
+                    console.print(Panel(_text, expand=True))
             
             if command_id is not None:
                 history_manager.mark_executed(command_id, success, output[:500] if output else None)
@@ -287,7 +548,8 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
     except KeyboardInterrupt:
         console.print("\n[yellow]Operation cancelled by user[/yellow]")
     except Exception as e:
-        logger.error(f"Error processing query: {e}", exc_info=True)
+        if logger:
+            logger.error(f"Error processing query: {e}", exc_info=True)
         console.print(f"[red]❌ Error: {e}[/red]")
 
 
@@ -305,9 +567,12 @@ def normalize_commands(commands: List[str]) -> List[str]:
                 if cmd not in seen:
                     normalized.append(cmd)
                     seen.add(cmd)
+                    # Limit to 8 commands for single-key selection (1-8)
+                    if len(normalized) >= 8:
+                        return normalized
     return normalized
 
-def select_command(commands: List[str], safety_checker: SafetyChecker, config: ConfigManager, lang: str, translator: LLMTranslator) -> Tuple[Optional[str], bool]:
+def select_command(commands: List[str], safety_checker: SafetyChecker, config: ConfigManager, lang: str, translator: LLMTranslator, interactive_session=False) -> Tuple[Optional[str], bool]:
     if len(commands) == 1:
         command = commands[0]
         check_result = safety_checker.check_command(command)
@@ -319,7 +584,7 @@ def select_command(commands: List[str], safety_checker: SafetyChecker, config: C
         
         if check_result.needs_confirmation():
             if not confirm_dangerous_command(command, check_result, lang, translator):
-                return None
+                return None, False
         
         return command, False
     
@@ -328,34 +593,144 @@ def select_command(commands: List[str], safety_checker: SafetyChecker, config: C
         check_result = safety_checker.check_command(cmd)
         display_command_with_safety(cmd, check_result, idx, lang, translator)
     
-    while True:
-        choice = Prompt.ask(
-            "\n" + tr_llm("select_command_prompt", lang, translator, max=len(commands)),
-            default="1"
-        )
+    console.print(
+        "\n" + tr_llm("select_command_prompt", lang, translator, max=len(commands))
+    )
+    console.print(
+        f"[dim]{tr_llm('selection_hint', lang, translator)}[/dim] ",
+        end=""
+    )
+    
+    try:
+        # First key press
+        key = readchar.readkey()
+        console.print(key, end="")
         
-        while True:
-            if choice.lower() == 'q':
-                return None, False
-            
+        if key.lower() == 'q':
+            console.print()
+            return None, False
+        
+        if key == '!':
+            # Direct execution mode - wait for number
+            key2 = readchar.readkey()
+            console.print(key2)
             try:
-                idx = int(choice) - 1
+                idx = int(key2) - 1
                 if 0 <= idx < len(commands):
                     selected = commands[idx]
                     check_result = safety_checker.check_command(selected)
                     
                     if check_result.is_blocked():
                         console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+                        return None, False
                     
+                    # Safety confirmation for high-risk commands
                     if check_result.needs_confirmation():
                         if not confirm_dangerous_command(selected, check_result, lang, translator):
-                            return None
-
-                        return selected, True
+                            return None, False
+                    
+                    return selected, False  # Executed directly
                 else:
                     console.print(f"[red]{tr_llm('enter_number_between', lang, translator, max=len(commands))}[/red]")
+                    return None, False
             except ValueError:
                 console.print(f"[red]{tr_llm('invalid_input', lang, translator)}[/red]")
+                return None, False
+        else:
+            # Regular number selection - review mode
+            console.print()
+            try:
+                idx = int(key) - 1
+                if 0 <= idx < len(commands):
+                    selected = commands[idx]
+                    check_result = safety_checker.check_command(selected)
+                    
+                    if check_result.is_blocked():
+                        console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+                        return None, False
+                    
+                    # Show the command for editing - return it for prefilling in interactive mode
+                    console.print(f"\n[cyan]{tr_llm('selected_command', lang, translator)}:[/cyan] [white]{selected}[/white]\n")
+                    
+                    if interactive_session:
+                        # In interactive mode, return command for prefilling
+                        return selected, False
+                    
+                    # Safety confirmation for high-risk commands
+                    if check_result.needs_confirmation():
+                        if not confirm_dangerous_command(selected, check_result, lang, translator):
+                            return None, False
+                    
+                    return selected, True  # User reviewed
+                else:
+                    console.print(f"[red]{tr_llm('enter_number_between', lang, translator, max=len(commands))}[/red]")
+                    return None, False
+            except ValueError:
+                console.print(f"[red]{tr_llm('invalid_input', lang, translator)}[/red]")
+                return None, False
+    except Exception as e:
+        # Fallback to Prompt.ask if readchar fails
+        if logger:
+            logger.warning(f"readchar failed in select_command, falling back to Prompt.ask: {e}")
+        console.print()
+        choice = Prompt.ask("", default="1")
+        
+        if choice.lower() == 'q':
+            return None, False
+        
+        # Check if it's direct execution format (!1, !2, etc.)
+        execute_directly = False
+        choice_num = choice
+        if choice.startswith('!'):
+            execute_directly = True
+            choice_num = choice[1:]
+        
+        try:
+            idx = int(choice_num) - 1
+            if 0 <= idx < len(commands):
+                selected = commands[idx]
+                check_result = safety_checker.check_command(selected)
+                
+                if check_result.is_blocked():
+                    console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+                    return None, False
+                
+                # If user chose to review (not execute directly)
+                if not execute_directly:
+                    console.print(f"\n[cyan]{tr_llm('selected_command', lang, translator)}:[/cyan] [white]{selected}[/white]")
+                    edit_choice = Prompt.ask(
+                        tr_llm("edit_or_execute_prompt", lang, translator),
+                        default="e"
+                    )
+                    
+                    if edit_choice.lower() == 'q':
+                        return None, False
+                    elif edit_choice.lower() == 'm':
+                        modified_cmd = Prompt.ask(
+                            tr_llm("modify_command_prompt", lang, translator),
+                            default=selected
+                        )
+                        if modified_cmd and modified_cmd.strip():
+                            selected = modified_cmd.strip()
+                            check_result = safety_checker.check_command(selected)
+                            if check_result.is_blocked():
+                                console.print(f"[red bold]⛔ {tr_llm('blocked_reason', lang, translator)}[/red bold]")
+                                return None, False
+                        else:
+                            return None, False
+                
+                # Safety confirmation for high-risk commands
+                if check_result.needs_confirmation():
+                    if not confirm_dangerous_command(selected, check_result, lang, translator):
+                        return None, False
+                
+                return selected, not execute_directly
+            else:
+                console.print(f"[red]{tr_llm('enter_number_between', lang, translator, max=len(commands))}[/red]")
+                return None, False
+        except ValueError:
+            console.print(f"[red]{tr_llm('invalid_input', lang, translator)}[/red]")
+            return None, False
 
 
 def display_command_with_safety(command: str, check_result, index: int = 1, lang: str = "en", translator: LLMTranslator = None):
@@ -378,12 +753,28 @@ def confirm_dangerous_command(command: str, check_result, lang: str, translator:
     console.print(f"[yellow]{tr_llm('command_label', lang, translator)}:[/yellow] {command}")
     console.print(f"[yellow]{tr_llm('risk_label', lang, translator)}:[/yellow] {translate_rule_description_llm(check_result.message, lang, translator)}")
     
-    confirmation = Prompt.ask(
-        "\n" + tr_llm("type_yes_to_proceed", lang, translator),
-        default="no"
+    console.print(
+        "\n" + tr_llm("type_yes_to_proceed", lang, translator) + " [dim](yes/no, default: no)[/dim] ",
+        end=""
     )
     
-    return confirmation.lower() == "yes"
+    try:
+        # Read 3 characters for "yes"
+        chars = []
+        for _ in range(3):
+            key = readchar.readkey()
+            chars.append(key.lower())
+            console.print(key, end="")
+        console.print()  # New line after input
+        
+        return ''.join(chars) == "yes"
+    except Exception:
+        # Fallback to Prompt.ask if readchar fails
+        confirmation = Prompt.ask(
+            "\n" + tr_llm("type_yes_to_proceed", lang, translator),
+            default="no"
+        )
+        return confirmation.lower() == "yes"
 
 
 def explain_command(command: str, config: ConfigManager):
@@ -435,12 +826,12 @@ def show_history(config: ConfigManager):
         history_page = all_history[start_idx:end_idx]
         
         # Display current page
-        table = Table(show_header=True, header_style="bold cyan")
-        table.add_column("Time", style="dim", width=16)
-        table.add_column("Query", style="cyan", width=40)
-        table.add_column("Command", style="white", width=40)
-        table.add_column("Count", justify="center", width=6)
-        table.add_column("Status", justify="center", width=6)
+        table = Table(show_header=True, header_style="bold cyan", box=box.ROUNDED)
+        table.add_column("Time", style="dim", width=16, no_wrap=True)
+        table.add_column("Query", style="cyan", width=40, no_wrap=True)
+        table.add_column("Command", style="white", width=40, no_wrap=True)
+        table.add_column("Count", justify="center", width=6, no_wrap=True)
+        table.add_column("Status", justify="center", width=6, no_wrap=True)
         
         for entry in history_page:
             # Determine status: ✓ (success), ✗ (failed), or empty (not executed)
@@ -450,9 +841,15 @@ def show_history(config: ConfigManager):
             else:
                 executed = ""
             time_str = entry.get("timestamp", "")[:16]
-            query = entry.get("user_query", "")[:38] + "..." if len(entry.get("user_query", "")) > 40 else entry.get("user_query", "")
-            command = entry.get("generated_command", "")[:38] + "..." if len(entry.get("generated_command", "")) > 40 else entry.get("generated_command", "")
+            query = entry.get("user_query", "") or ""
+            command = entry.get("generated_command", "") or ""
             count = str(entry.get("execution_count", 1))
+            
+            # Truncate text to fit column width with ellipsis
+            if len(query) > 37:
+                query = query[:37] + "..."
+            if len(command) > 37:
+                command = command[:37] + "..."
             
             table.add_row(time_str, query, command, count, executed)
         
@@ -502,7 +899,9 @@ def create_prompt_session(config: ConfigManager, history_manager: HistoryManager
         past = history_manager.get_recent_history(limit=200)
         for entry in reversed(past):
             q = entry.get("user_query")
-            if q:
+            # Only add single-line, clean commands to history to avoid polluting completion
+            # Skip commands with pipes, redirects, or complex shell syntax
+            if q and "\n" not in q and "||" not in q and "&&" not in q:
                 hist.append_string(q)
     except Exception as e:
         if logger:
@@ -590,6 +989,8 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
         complete_while = bool(config.get("ui.completion.complete_while_typing", False))
         complete_in_thread = bool(config.get("ui.completion.complete_in_thread", True))
         
+        prefill_command = None  # Command to prefill in next prompt
+        
         while True:
             try:
                 auto_mouse = bool(config.get("ui.mouse_auto_mode", True))
@@ -602,21 +1003,26 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                             complete_while_typing=complete_while,
                             complete_in_thread=complete_in_thread,
                             mouse_support=mouse_support,
-                            complete_style=complete_style
+                            complete_style=complete_style,
+                            default=prefill_command or ""
                         ).strip()
                     else:
                         query = session.prompt(
                             complete_while_typing=complete_while,
                             complete_in_thread=complete_in_thread,
-                            mouse_support=mouse_support
+                            mouse_support=mouse_support,
+                            default=prefill_command or ""
                         ).strip()
                 except TypeError:
-                    # Fallback for older prompt_toolkit versions that don't support complete_style
+                    # Fallback for older prompt_toolkit versions that don't support complete_style or default
                     query = session.prompt(
                         complete_while_typing=complete_while,
                         complete_in_thread=complete_in_thread,
                         mouse_support=mouse_support
                     ).strip()
+                
+                # Reset prefill for next iteration
+                prefill_command = None
                 
                 if not query:
                     continue
@@ -653,6 +1059,60 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                     console.print(f"Total commands: {stats['total_commands']}")
                     console.print(f"Executed: {stats['executed_commands']}")
                     console.print(f"👍 Positive feedback: {stats['positive_feedback']}")
+                    if bool(config.get("ui.mouse_auto_mode", True)):
+                        try:
+                            config.set("ui.mouse_support", False)
+                            set_mouse_mode(False)
+                        except Exception as e:
+                            if logger:
+                                logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
+                    continue
+
+                if query.startswith("/export"):
+                    parts = query.split(maxsplit=1)
+                    export_path = parts[1] if len(parts) > 1 else None
+                    try:
+                        exported_file = history_manager.export_database(export_path)
+                        console.print(f"[green]✅ History database exported to: {exported_file}[/green]")
+                    except Exception as e:
+                        console.print(f"[red]❌ Failed to export database: {e}[/red]")
+                        if logger:
+                            logger.error(f"Export failed: {e}", exc_info=True)
+                    if bool(config.get("ui.mouse_auto_mode", True)):
+                        try:
+                            config.set("ui.mouse_support", False)
+                            set_mouse_mode(False)
+                        except Exception as e:
+                            if logger:
+                                logger.warning(f"Failed to disable mouse_support in auto mode: {e}")
+                    continue
+
+                if query.startswith("/import"):
+                    parts = query.split(maxsplit=1)
+                    if len(parts) < 2:
+                        console.print("[yellow]Usage: /import <path_to_database>[/yellow]")
+                        continue
+                    import_path = parts[1]
+                    try:
+                        history_manager.import_database(import_path)
+                        console.print(f"[green]✅ History database imported from: {import_path}[/green]")
+                        
+                        # Reload history into the prompt session for auto-completion
+                        try:
+                            past = history_manager.get_recent_history(limit=200)
+                            for entry in reversed(past):
+                                q = entry.get("user_query")
+                                if q and not any(h == q for h in [session.history.get_strings()[i] for i in range(len(session.history.get_strings()))]):
+                                    session.history.append_string(q)
+                            console.print("[cyan]✓ Imported commands are now available in history and completions[/cyan]")
+                        except Exception as refresh_err:
+                            if logger:
+                                logger.warning(f"Could not refresh prompt history: {refresh_err}")
+                            console.print("[yellow]Note: Some features may require restarting interactive mode[/yellow]")
+                    except Exception as e:
+                        console.print(f"[red]❌ Failed to import database: {e}[/red]")
+                        if logger:
+                            logger.error(f"Import failed: {e}", exc_info=True)
                     if bool(config.get("ui.mouse_auto_mode", True)):
                         try:
                             config.set("ui.mouse_support", False)
@@ -708,7 +1168,13 @@ def interactive_mode(config: ConfigManager, dry_run: bool = False, safety_enable
                     else:
                                             continue
                     
-                process_query(query, config, dry_run, safety_enabled)
+                # Process query and check if it returns a command for editing
+                returned_cmd = process_query(query, config, dry_run, safety_enabled, interactive_session=True)
+                if returned_cmd:
+                    # Command was selected for editing, prefill it in next prompt
+                    prefill_command = returned_cmd
+                    continue
+                    
                 console.print()
                 # Auto mode: after output, disable mouse to allow selection
                 if bool(config.get("ui.mouse_auto_mode", True)):
@@ -734,6 +1200,8 @@ def show_help():
   /help      - Show this help message
   /history   - View command history (paginated, 20 per page)
   /stats     - Show usage statistics
+  /export    - Export history database: /export [path]
+  /import    - Import history database: /import <path>
   /mouse     - Toggle mouse support: /mouse [on|off|toggle]
   /quit      - Exit interactive mode
 
@@ -753,6 +1221,11 @@ def show_help():
   - show disk usage sorted by size
   - count lines of code in this project
   - compress all images in this folder
+
+[bold]Backup & Migration:[/bold]
+  /export                    - Export to default location (~/shwizard_backup.db)
+  /export ~/my_backup.db     - Export to specific file
+  /import ~/my_backup.db     - Import from backup file
 """
     console.print(Panel(help_text, border_style="cyan"))
 
