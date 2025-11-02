@@ -44,6 +44,10 @@ class FakeAIService:
     def generate_commands(self, query: str, context, relevant_commands):
         # Return a trivial safe command for natural language path
         return ["echo hello"]
+    
+    def extract_keywords(self, user_query: str, max_keywords: int = 6):
+        # Return some fake keywords for testing
+        return ["delete", "temporary", "files"]
 
 
 @pytest.fixture(autouse=True)

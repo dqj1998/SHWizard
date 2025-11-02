@@ -8,6 +8,7 @@ from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from rich.markdown import Markdown
 from rich.text import Text
+from rich import box
 from typing import Optional, List, Tuple
 import readchar
 from prompt_toolkit import PromptSession
@@ -32,7 +33,7 @@ from shwizard.utils.logger import setup_logger, get_logger
 from shwizard.utils.input_utils import is_command_input
 from shwizard.utils.i18n import LLMTranslator, tr_llm, translate_rule_description_llm
 from shwizard.utils.completion import ShellCompleter
-from shwizard.utils.output_utils import sanitize_output
+from shwizard.utils.output_utils import sanitize_output, display_paginated_output, should_paginate_output
 
 console = Console()
 logger = None
@@ -236,9 +237,12 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
             
             if output:
                 console.print(f"\n[bold]{tr_llm('output_label', lang, translator)}:[/bold]")
-                _san = sanitize_output(output)
-                _text = Text.from_ansi(_san)
-                console.print(Panel(_text, expand=True))
+                if should_paginate_output(output):
+                    display_paginated_output(output, console, tr_llm('output_label', lang, translator))
+                else:
+                    _san = sanitize_output(output)
+                    _text = Text.from_ansi(_san)
+                    console.print(Panel(_text, expand=True))
             
             if command_id is not None:
                 history_manager.mark_executed(command_id, success, output[:500] if output else None)
@@ -347,9 +351,12 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
                                 
                                 if output:
                                     console.print(f"\n[bold]{tr_llm('output_label', lang, translator)}:[/bold]")
-                                    _san = sanitize_output(output)
-                                    _text = Text.from_ansi(_san)
-                                    console.print(Panel(_text, expand=True))
+                                    if should_paginate_output(output):
+                                        display_paginated_output(output, console, tr_llm('output_label', lang, translator))
+                                    else:
+                                        _san = sanitize_output(output)
+                                        _text = Text.from_ansi(_san)
+                                        console.print(Panel(_text, expand=True))
                                 
                                 if command_id is not None:
                                     history_manager.mark_executed(command_id, success, output[:500] if output else None)
@@ -460,9 +467,12 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
                                 
                                 if output:
                                     console.print(f"\n[bold]{tr_llm('output_label', lang, translator)}:[/bold]")
-                                    _san = sanitize_output(output)
-                                    _text = Text.from_ansi(_san)
-                                    console.print(Panel(_text, expand=True))
+                                    if should_paginate_output(output):
+                                        display_paginated_output(output, console, tr_llm('output_label', lang, translator))
+                                    else:
+                                        _san = sanitize_output(output)
+                                        _text = Text.from_ansi(_san)
+                                        console.print(Panel(_text, expand=True))
                                 
                                 if command_id is not None:
                                     history_manager.mark_executed(command_id, success, output[:500] if output else None)
@@ -525,9 +535,12 @@ def process_query(query: str, config: ConfigManager, dry_run: bool = False, safe
             
             if output:
                 console.print(f"\n[bold]{tr_llm('output_label', lang, translator)}:[/bold]")
-                _san = sanitize_output(output)
-                _text = Text.from_ansi(_san)
-                console.print(Panel(_text, expand=True))
+                if should_paginate_output(output):
+                    display_paginated_output(output, console, tr_llm('output_label', lang, translator))
+                else:
+                    _san = sanitize_output(output)
+                    _text = Text.from_ansi(_san)
+                    console.print(Panel(_text, expand=True))
             
             if command_id is not None:
                 history_manager.mark_executed(command_id, success, output[:500] if output else None)
@@ -813,12 +826,12 @@ def show_history(config: ConfigManager):
         history_page = all_history[start_idx:end_idx]
         
         # Display current page
-        table = Table(show_header=True, header_style="bold cyan")
-        table.add_column("Time", style="dim", width=16)
-        table.add_column("Query", style="cyan", width=40)
-        table.add_column("Command", style="white", width=40)
-        table.add_column("Count", justify="center", width=6)
-        table.add_column("Status", justify="center", width=6)
+        table = Table(show_header=True, header_style="bold cyan", box=box.ROUNDED)
+        table.add_column("Time", style="dim", width=16, no_wrap=True)
+        table.add_column("Query", style="cyan", width=40, no_wrap=True)
+        table.add_column("Command", style="white", width=40, no_wrap=True)
+        table.add_column("Count", justify="center", width=6, no_wrap=True)
+        table.add_column("Status", justify="center", width=6, no_wrap=True)
         
         for entry in history_page:
             # Determine status: ✓ (success), ✗ (failed), or empty (not executed)
@@ -828,9 +841,15 @@ def show_history(config: ConfigManager):
             else:
                 executed = ""
             time_str = entry.get("timestamp", "")[:16]
-            query = entry.get("user_query", "")[:38] + "..." if len(entry.get("user_query", "")) > 40 else entry.get("user_query", "")
-            command = entry.get("generated_command", "")[:38] + "..." if len(entry.get("generated_command", "")) > 40 else entry.get("generated_command", "")
+            query = entry.get("user_query", "") or ""
+            command = entry.get("generated_command", "") or ""
             count = str(entry.get("execution_count", 1))
+            
+            # Truncate text to fit column width with ellipsis
+            if len(query) > 37:
+                query = query[:37] + "..."
+            if len(command) > 37:
+                command = command[:37] + "..."
             
             table.add_row(time_str, query, command, count, executed)
         
@@ -880,7 +899,9 @@ def create_prompt_session(config: ConfigManager, history_manager: HistoryManager
         past = history_manager.get_recent_history(limit=200)
         for entry in reversed(past):
             q = entry.get("user_query")
-            if q:
+            # Only add single-line, clean commands to history to avoid polluting completion
+            # Skip commands with pipes, redirects, or complex shell syntax
+            if q and "\n" not in q and "||" not in q and "&&" not in q:
                 hist.append_string(q)
     except Exception as e:
         if logger:
